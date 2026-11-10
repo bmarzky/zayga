@@ -1,32 +1,73 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw } from 'lucide-react';
 import { supabase } from './supabase';
 import './style.css';
+import './pos.css';
 
+/* ===================== Helper & konstanta ===================== */
 const money = n => 'Rp' + Number(n || 0).toLocaleString('id-ID');
 const read = (k, f) => { try { return JSON.parse(localStorage.getItem(k)) ?? f } catch { return f } };
+const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} };
 
-const getPrintBridge = () => read('z_print_url', 'http://localhost:9100');
+const BAKSO_ID = 'bakso-custom';
+const NOTE_PRESETS = ['Tidak pedas', 'Pedas', 'Extra pedas', 'Tanpa sayur', 'Tanpa bawang', 'Dibungkus'];
+const STATUSES = ['Baru', 'Dimasak', 'Siap', 'Diantar'];
+const STATUS_STYLE = { Baru: ['#fef9c3', '#854d0e'], Dimasak: ['#dbeafe', '#1d4ed8'], Siap: ['#dcfce7', '#166534'], Diantar: ['#f1f5f9', '#64748b'] };
+const statusOf = o => o.order_status || 'Diantar'; // pesanan lama (tanpa status) dianggap sudah selesai
+const NEXT_LABEL = { Baru: 'Mulai masak', Dimasak: 'Tandai siap', Siap: 'Sudah diantar' };
 
+const normLoc = v => String(v ?? '').trim().toLowerCase();
+const locLabel = v => /^\d+$/.test(String(v).trim()) ? 'Meja ' + String(v).trim() : String(v).trim();
+const sumItems = a => (a || []).reduce((s, x) => s + x.price * x.qty, 0);
+const calcTotal = (items, d = 0, r = 0) => Math.max(0, sumItems(items) - (d || 0) + (r || 0));
+const baseName = n => String(n || '').replace(/ \((Panas|Hangat|Dingin)\)/, '').replace(/ \+ Susu$/, '');
+const nowTime = () => new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+const ledger = (m, a, by) => ({ m, a, by, t: new Date().toISOString(), d: new Date().toLocaleDateString('en-CA') });
+const isNetErr = e => !navigator.onLine || /fetch|network|failed to|timeout|load failed/i.test(e?.message || '');
+const buzz = (ms = 15) => { try { navigator.vibrate && navigator.vibrate(ms) } catch {} };
+
+let audioCtx;
+const beep = (freq = 880, dur = 0.16, times = 1) => {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    for (let i = 0; i < times; i++) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+      const t = audioCtx.currentTime + i * (dur + 0.1);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.start(t); o.stop(t + dur + 0.02);
+    }
+  } catch {}
+};
+
+const newDraft = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), cart: [], customer: '', location: '', notes: '', discount: { type: 'rp', value: '' } });
+const getLocalPrintBridge = () => read('z_local_print_url', 'http://localhost:9100');
+
+/* ===================== Struk & printer ===================== */
 const receiptText = (text, align = 'left', bold = false, size = 'normal') => ({ type: 'text', text: String(text ?? ''), align, bold, size });
 const receiptDivider = () => ({ type: 'divider' });
 
-// jumlah yang sudah terbayar untuk tagihan (uang diterima dikurangi kembalian)
 const settledOf = o => o.payment === 'Belum Bayar' ? 0 : Math.max(0, (o.paid || 0) - (o.change || 0));
-// sisa tagihan yang belum dibayar
 const remainOf = o => Math.max(0, (o.total || 0) - settledOf(o));
 
 const buildReceipt = (o, type) => {
   const kitchen = type === 'kitchen';
   const content = [receiptText('ZAYGA', 'center', true, 'large'), receiptText(o.isAddition ? 'MENU TAMBAHAN' : (kitchen ? 'TIKET PESANAN DAPUR' : 'STRUK PEMBAYARAN'), 'center', true), receiptDivider(), ...(o.isAddition ? [] : [receiptText(`No: ${o.id}`, 'left', true)]), receiptText(`Waktu: ${o.date} ${o.time}`), receiptText(`Kasir: ${o.cashier}`), receiptText(`Pelanggan: ${o.customer || '-'}`), receiptText(`Lokasi: ${o.location}`), receiptDivider()];
   for (const item of o.items) {
-    if (kitchen) { content.push(receiptText(`${item.qty} x ${item.name}`, 'left', true)); }
-    else { content.push(receiptText(item.name)); content.push({ type: 'row', left: `${item.qty} x ${money(item.price)}`, right: money(item.qty * item.price) }); }
+    if (kitchen) {
+      content.push(receiptText(`${item.qty} x ${item.name}`, 'left', true));
+      if (item.note) content.push(receiptText(`   >> ${item.note}`, 'left', true));
+    } else { content.push(receiptText(item.name)); content.push({ type: 'row', left: `${item.qty} x ${money(item.price)}`, right: money(item.qty * item.price) }); }
   }
   content.push(receiptDivider());
-  if (kitchen) { content.push(receiptText('CATATAN DAPUR', 'left', true)); content.push(receiptText(o.notes || '- Tidak ada catatan -')); content.push(receiptDivider()); content.push(receiptText('TOLONG YAA KAK :)', 'center', true)); }
+  if (kitchen) { content.push(receiptText('CATATAN DAPUR', 'left', true)); content.push(receiptText(o.notes || '- Tidak ada catatan -')); content.push(receiptDivider()); content.push(receiptText('ERIC DAN AGIL :)', 'center', true)); }
   else {
+    if ((o.discount || 0) > 0 || (o.rounding || 0) > 0) {
+      content.push({ type: 'row', left: 'Subtotal', right: money(sumItems(o.items)) });
+      if (o.discount > 0) content.push({ type: 'row', left: 'Diskon', right: '-' + money(o.discount) });
+      if (o.rounding > 0) content.push({ type: 'row', left: 'Pembulatan', right: money(o.rounding) });
+    }
     content.push({ type: 'row', left: 'TOTAL', right: money(o.total), bold: true });
     content.push({ type: 'row', left: `Bayar (${o.payment})`, right: money(o.paid) });
     content.push({ type: 'row', left: 'Kembali', right: money(o.change) });
@@ -37,8 +78,8 @@ const buildReceipt = (o, type) => {
   return content;
 };
 
-async function checkPrintBridge() {
-  const url = getPrintBridge();
+async function checkPrintBridge(urlEndpoint) {
+  const url = urlEndpoint || 'http://localhost:9100';
   const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2500) });
   if (!response.ok) throw new Error('Aplikasi printer tidak merespons.');
   const data = await response.json();
@@ -46,16 +87,27 @@ async function checkPrintBridge() {
   return data;
 }
 
-async function sendPrintJob(order, type) {
-  const url = getPrintBridge();
-  const health = await checkPrintBridge();
-  const response = await fetch(`${url}/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paperWidth: 58, cut: false, reference: `${order.id}-${type}`, content: buildReceipt(order, type) }) });
+async function postPrint(content, reference, urlEndpoint) {
+  const url = urlEndpoint || 'http://localhost:9100';
+  const health = await checkPrintBridge(url);
+  const response = await fetch(`${url}/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paperWidth: 58, cut: false, reference, content }) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.fix || data.detail || data.error || `Gagal mencetak (${response.status})`);
   return { job: data, printer: health.printer?.name || 'Printer Bluetooth' };
 }
+const sendPrintJob = (order, type, url) => postPrint(buildReceipt(order, type), `${order.id}-${type}`, url);
 
+/* ===================== Aplikasi ===================== */
 function App() {
+  // draf pesanan (beberapa keranjang) dipulihkan dari localStorage
+  const init = useRef(null);
+  if (!init.current) {
+    const s = read('z_drafts', null);
+    const ds = s?.drafts?.length ? s.drafts : [newDraft()];
+    init.current = { ds, cur: ds.find(d => d.id === s?.draftId) || ds[0] };
+  }
+  const cur0 = init.current.cur;
+
   const [user, setUser] = useState(() => read('z_user', null));
   const [login, setLogin] = useState({ username: '', password: '' });
   const [usersList, setUsersList] = useState([]);
@@ -63,27 +115,62 @@ function App() {
   const [items, setItems] = useState([]);
   const [orders, setOrders] = useState([]);
   const [clearLogs, setClearLogs] = useState([]);
+  const [shifts, setShifts] = useState([]);
 
   const [page, setPage] = useState('Pesanan');
   const [category, setCategory] = useState('Semua');
   const [query, setQuery] = useState('');
-  const [cart, setCart] = useState([]);
-  const [customer, setCustomer] = useState('');
-  const [location, setLocation] = useState('');
-  const [notes, setNotes] = useState('');
+
+  const [drafts, setDrafts] = useState(init.current.ds);
+  const [draftId, setDraftId] = useState(cur0.id);
+  const [cart, setCart] = useState(cur0.cart || []);
+  const [customer, setCustomer] = useState(cur0.customer || '');
+  const [location, setLocation] = useState(cur0.location || '');
+  const [notes, setNotes] = useState(cur0.notes || '');
+  const [discount, setDiscount] = useState(cur0.discount || { type: 'rp', value: '' });
+  const stash = useRef(null);
+
   const [payment, setPayment] = useState('Tunai');
   const [paid, setPaid] = useState('');
-  const [paidRaw, setPaidRaw] = useState(''); // angka yang diketik kasir (singkatan ribuan: 10 = 10.000)
+  const [paidRaw, setPaidRaw] = useState('');
+  const [partialAmt, setPartialAmt] = useState('');
+  const [roundTo, setRoundTo] = useState(() => Number(localStorage.getItem('z_round')) || 0);
   const [showPay, setShowPay] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef();
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
+  const [queueCount, setQueueCount] = useState(() => read('z_queue', []).length);
+  const flushing = useRef(false);
 
   const [selectedOrder, setSelectedOrder] = useState(null);
-  const [addingToOrder, setAddingToOrder] = useState(null); // bon lama yang sedang ditambah itemnya
-  const [settling, setSettling] = useState(null); // bon yang sedang dilunasi
+  const [addingToOrder, setAddingToOrder] = useState(null);
+  const [settling, setSettling] = useState(null);
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'Kasir' });
   const [selectedItemForVariant, setSelectedItemForVariant] = useState(null);
+  const [variantTemp, setVariantTemp] = useState('');
+  const [variantSusu, setVariantSusu] = useState(false);
 
-  const [printUrl, setPrintUrl] = useState(() => getPrintBridge());
+  const [moveOrder, setMoveOrder] = useState(null);
+  const [moveTarget, setMoveTarget] = useState('');
+  const [moveBusy, setMoveBusy] = useState(false);
+
+  const [splitOrder, setSplitOrder] = useState(null);
+  const [splitQty, setSplitQty] = useState({});
+  const [splitLoc, setSplitLoc] = useState('');
+
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [discOpen, setDiscOpen] = useState(false);
+  const [stickyTop, setStickyTop] = useState(0);
+
+  const [baksoOpen, setBaksoOpen] = useState(false);
+  const [baksoPrice, setBaksoPrice] = useState('');
+  const [baksoName, setBaksoName] = useState('');
+
+  const [localPrintUrl, setLocalPrintUrl] = useState(() => getLocalPrintBridge());
+  const [serverPrintUrl, setServerPrintUrl] = useState('http://localhost:9100');
+
   const [printerStatus, setPrinterStatus] = useState('Memeriksa...');
   const [printerName, setPrinterName] = useState('');
   const [printing, setPrinting] = useState(false);
@@ -93,161 +180,467 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
 
-  useEffect(() => {
-    fetchDataFromSupabase();
-  }, []);
+  const [setTab, setSetTab] = useState('printer');
+  const [serverDraft, setServerDraft] = useState('');
+  const [showPwd, setShowPwd] = useState(false);
 
-  const fetchDataFromSupabase = async () => {
+  const [noteItem, setNoteItem] = useState(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteStats, setNoteStats] = useState(() => read('z_note_stats', {}));
+
+  const [stockItem, setStockItem] = useState(null);
+  const [stockDraft, setStockDraft] = useState('');
+  const [tableSheet, setTableSheet] = useState(null);
+  const [qTab, setQTab] = useState('Semua');
+  const [histFilter, setHistFilter] = useState('Hari ini');
+  const [shiftWho, setShiftWho] = useState('');
+  const [shiftForm, setShiftForm] = useState({ opening: '', counted: '', note: '' });
+  const [, setTick] = useState(0);
+
+  const searchRef = useRef(null);
+  const lp = useRef({ t: null, fired: false });
+  const userRef = useRef(user); userRef.current = user;
+  const ordersRef = useRef(orders); ordersRef.current = orders;
+  const localStatus = useRef({});
+
+  const today = new Date().toLocaleDateString('en-CA');
+
+  /* ---------- toast ---------- */
+  const flash = (msg, ms = 5000, action = null) => {
+    clearTimeout(toastTimer.current);
+    setToast({ msg, action });
+    toastTimer.current = setTimeout(() => setToast(null), ms);
+  };
+
+  /* ---------- data ---------- */
+  const fetchData = async () => {
     try {
-      const [resUsers, resMenu, resOrders, resLogs] = await Promise.all([
+      const [resUsers, resMenu, resOrders, resLogs, resSettings, resShifts] = await Promise.all([
         supabase.from('users').select('*'),
         supabase.from('menu_items').select('*'),
         supabase.from('orders').select('*').order('created_at', { ascending: false }),
-        supabase.from('clear_logs').select('*')
+        supabase.from('clear_logs').select('*'),
+        supabase.from('app_settings').select('*').eq('key', 'print_url').maybeSingle(),
+        supabase.from('shift_closings').select('*').order('id', { ascending: false }).limit(60)
       ]);
-
       if (resUsers.data) setUsersList(resUsers.data);
       if (resMenu.data) setItems(resMenu.data);
-      if (resOrders.data) setOrders(resOrders.data);
+      if (resOrders.data) {
+        const q = read('z_queue', []);
+        setOrders([...q.filter(x => !resOrders.data.some(d => d.id === x.id)), ...resOrders.data]);
+      }
       if (resLogs.data) setClearLogs(resLogs.data);
+      if (resShifts.data) setShifts(resShifts.data);
+      if (resSettings.data && resSettings.data.value) setServerPrintUrl(resSettings.data.value);
     } catch (err) {
       console.error('Gagal mengambil data dari Supabase:', err.message);
     }
   };
 
-  useEffect(() => { if (page === 'Pengaturan') refreshPrinter(); }, [page, printUrl]);
-  useEffect(() => { if (paid === '') setPaidRaw(''); }, [paid]);
+  const queueOrder = (o) => { const q = read('z_queue', []); q.push(o); write('z_queue', q); setQueueCount(q.length); };
+  const flushQueue = async () => {
+    const q = read('z_queue', []);
+    if (!q.length || flushing.current || !navigator.onLine) return;
+    flushing.current = true;
+    const left = [];
+    const readyToPrint = [];
+    let sent = 0;
+    for (const o of q) {
+      const { _queued, ...row } = o;
+      const { error } = await supabase.from('orders').insert([row]);
+      if (error && !/duplicate|23505/i.test(String(error.message) + String(error.code || ''))) {
+        left.push(o);
+      } else {
+        sent++;
+        readyToPrint.push(row);
+      }
+    }
+    write('z_queue', left); setQueueCount(left.length); flushing.current = false;
+    if (sent) {
+      flash(`${sent} pesanan offline berhasil terkirim. Mencetak tiket dapur...`);
+      setOrders(prev => prev.map(x => {
+        if (x._queued && !left.some(l => l.id === x.id)) {
+          const { _queued, ...r } = x;
+          return r;
+        }
+        return x;
+      }));
+      // Pesanan yang sempat antre offline tetap hanya mencetak tiket dapur.
+      for (const order of readyToPrint) await autoPrint(order);
+    }
+  };
 
+  useEffect(() => {
+    fetchData(); flushQueue();
+    const on = () => { setOnline(true); flushQueue(); fetchData(); };
+    const off = () => setOnline(false);
+    const vis = () => { if (document.visibilityState === 'visible') fetchData(); };
+    window.addEventListener('online', on); window.addEventListener('offline', off); document.addEventListener('visibilitychange', vis);
+    const iv = setInterval(() => { if (read('z_queue', []).length) flushQueue(); }, 20000);
+    const tk = setInterval(() => setTick(t => t + 1), 30000);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); document.removeEventListener('visibilitychange', vis); clearInterval(iv); clearInterval(tk); };
+  }, []);
+
+  // sinkronisasi realtime antar kasir
+  useEffect(() => {
+    if (!user) return;
+    const ch = supabase.channel('zayga-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, p => {
+        if (p.eventType === 'INSERT') {
+          const n = p.new;
+          const exists = ordersRef.current.some(x => x.id === n.id);
+          setOrders(o => o.some(x => x.id === n.id) ? o : [n, ...o]);
+          if (!exists && n.cashier !== userRef.current?.username && userRef.current?.role !== 'Dapur') {
+            beep(880, 0.15, 2);
+            flash(`Pesanan baru ${locLabel(n.location)} dari ${n.cashier}`);
+          }
+        } else if (p.eventType === 'UPDATE') {
+          const n = p.new;
+          const prev = ordersRef.current.find(x => x.id === n.id);
+          setOrders(o => o.map(x => x.id === n.id ? { ...x, ...n } : x));
+          if (n.order_status === 'Siap' && prev && prev.order_status !== 'Siap' &&
+              localStatus.current[n.id] !== 'Siap' && userRef.current?.role === 'Kasir') {
+            beep(660, 0.2, 3);
+            buzz(80);
+            flash(`PESANAN SIAP DIANTAR · ${locLabel(n.location)} · ${n.customer || 'Umum'}`, 9000);
+            try {
+              if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Pesanan Zayga siap diantar', {
+                  body: `${locLabel(n.location)} · ${n.customer || 'Umum'} · ${n.id}`,
+                  tag: `zayga-ready-${n.id}`
+                });
+              }
+            } catch {}
+          }
+          delete localStatus.current[n.id];
+        } else if (p.eventType === 'DELETE') {
+          setOrders(o => o.filter(x => x.id !== p.old.id));
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, p => {
+        if (p.eventType === 'DELETE') setItems(it => it.filter(x => x.id !== p.old.id));
+        else setItems(it => it.some(x => x.id === p.new.id) ? it.map(x => x.id === p.new.id ? { ...x, ...p.new } : x) : [...it, p.new]);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [user?.username]);
+
+  // detail bon selalu mengikuti data terbaru
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const f = orders.find(o => o.id === selectedOrder.id);
+    if (!f) setSelectedOrder(null); else if (f !== selectedOrder) setSelectedOrder(f);
+  }, [orders]);
+
+  useEffect(() => {
+    if (user?.role === 'Dapur' && page !== 'Antrian') setPage('Antrian');
+    if (user?.role === 'Kasir' && ['Dashboard', 'Laporan', 'Kelola Menu'].includes(page)) setPage('Pesanan');
+  }, [user?.role]);
+
+  useEffect(() => { setServerDraft(serverPrintUrl); }, [serverPrintUrl]);
+  const activePrintUrl = serverPrintUrl.trim() || localPrintUrl.trim() || 'http://localhost:9100';
+
+  useEffect(() => { if (page === 'Pengaturan') refreshPrinter(); }, [page, activePrintUrl]);
+  useEffect(() => { if (paid === '') setPaidRaw(''); }, [paid]);
+  useEffect(() => { localStorage.setItem('z_round', String(roundTo)); }, [roundTo]);
+  useEffect(() => {
+    const calc = () => {
+      const el = document.querySelector('.topbar');
+      if (!el) return setStickyTop(0);
+      const pos = getComputedStyle(el).position;
+      setStickyTop(pos === 'sticky' || pos === 'fixed' ? Math.round(el.getBoundingClientRect().height) : 0);
+    };
+    calc();
+    window.addEventListener('resize', calc);
+    return () => window.removeEventListener('resize', calc);
+  }, [user, page]);
+
+  // simpan draf pesanan (tidak saat mode tambah ke bon)
+  useEffect(() => {
+    if (addingToOrder) return;
+    write('z_drafts', { draftId, drafts: drafts.map(d => d.id === draftId ? { id: draftId, cart, customer, location, notes, discount } : d) });
+  }, [cart, customer, location, notes, discount, drafts, draftId, addingToOrder]);
+
+  /* ---------- navigasi ---------- */
   const allNavItems = [
     [LayoutDashboard, 'Dashboard', ['Admin']],
     [ShoppingCart, 'Pesanan', ['Admin', 'Kasir']],
+    [LayoutGrid, 'Denah', ['Admin', 'Kasir']],
+    [ChefHat, 'Antrian', ['Admin', 'Kasir', 'Dapur']],
     [ClipboardList, 'Riwayat', ['Admin', 'Kasir']],
+    [Lock, 'Tutup Kasir', ['Admin']],
     [BarChart3, 'Laporan', ['Admin']],
     [Utensils, 'Kelola Menu', ['Admin']],
     [Settings, 'Pengaturan', ['Admin', 'Kasir']]
   ];
-
   const visibleNavItems = allNavItems.filter(([_, __, roles]) => user && roles.includes(user.role));
-
+  const rolePages = {
+    Admin: ['Dashboard', 'Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Laporan', 'Kelola Menu', 'Pengaturan'],
+    Kasir: ['Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Pengaturan'],
+    Dapur: ['Antrian']
+  };
   const categories = ['Semua', 'Snack', 'Mie', 'Popmie', 'Nasi', 'Minuman', 'Kopi', 'Soft Drink'];
-  const filtered = useMemo(() => items.filter(x => x.active && (category === 'Semua' || x.category === category) && x.name.toLowerCase().includes(query.toLowerCase())), [items, category, query]);
-  const total = cart.reduce((s, x) => s + x.price * x.qty, 0);
-  const today = new Date().toLocaleDateString('en-CA');
-  const todays = orders.filter(o => o.date === today);
-  const payDue = settling ? remainOf(settling) : total;
 
-  const add = (item) => {
-    if (item.category === 'Minuman' || item.category === 'Kopi') {
-      setSelectedItemForVariant(item);
-    } else {
-      addToCartDirect(item, false);
-    }
+  /* ---------- turunan data ---------- */
+  const todays = orders.filter(o => o.date === today);
+  const siapCount = todays.filter(o => statusOf(o) === 'Siap').length;
+
+  const favNames = useMemo(() => {
+    const c = {};
+    orders.forEach(o => (o.items || []).forEach(i => { const n = baseName(i.name); if (i.category !== 'Bakso') c[n] = (c[n] || 0) + i.qty; }));
+    return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 10).map(e => e[0]);
+  }, [orders]);
+  const menuTabs = [...(favNames.length ? ['Favorit'] : []), ...categories, 'Bakso'];
+
+  const filtered = useMemo(() => {
+    let l = items.filter(x => x.active && (category === 'Semua' || category === 'Favorit' || x.category === category) && x.name.toLowerCase().includes(query.toLowerCase()));
+    if (category === 'Favorit') l = l.filter(x => favNames.includes(x.name)).sort((a, b) => favNames.indexOf(a.name) - favNames.indexOf(b.name));
+    return l;
+  }, [items, category, query, favNames]);
+  const showBakso = (category === 'Semua' || category === 'Bakso') && 'bakso'.includes(query.trim().toLowerCase());
+
+  const tableInfo = useMemo(() => {
+    const m = {};
+    todays.forEach(o => { const k = normLoc(o.location); (m[k] = m[k] || []).push(o); });
+    return m;
+  }, [orders, today]);
+
+  const noteChips = useMemo(() => {
+    const custom = Object.entries(noteStats).filter(([k]) => !NOTE_PRESETS.includes(k)).sort((a, b) => b[1] - a[1]).slice(0, 6).map(e => e[0]);
+    return [...NOTE_PRESETS, ...custom];
+  }, [noteStats]);
+
+  // total: subtotal -> diskon -> pembulatan (khusus tunai)
+  const subtotal = sumItems(cart);
+  const discNum = Number(discount.value) || 0;
+  const discAmt = addingToOrder ? 0 : Math.min(subtotal, discount.type === 'pct' ? Math.round(subtotal * Math.min(discNum, 100) / 100) : discNum);
+  const netTotal = subtotal - discAmt;
+  const roundAmt = (showPay && !settling && !addingToOrder && payment === 'Tunai' && roundTo) ? Math.ceil(netTotal / roundTo) * roundTo - netTotal : 0;
+  const grand = netTotal + roundAmt;
+  const payDue = settling ? remainOf(settling) : addingToOrder ? subtotal : grand;
+
+  const qtyOf = (item) => cart.filter(x => {
+    const id = String(x.id), base = String(item.id);
+    return id === base || id.startsWith(base + '-') || id.startsWith(base + '~');
+  }).reduce((sum, x) => sum + x.qty, 0);
+  const baksoQty = cart.filter(x => String(x.id).startsWith(BAKSO_ID + '-')).reduce((sum, x) => sum + x.qty, 0);
+  const cartQty = cart.reduce((sum, x) => sum + x.qty, 0);
+
+  /* ---------- draf pesanan ---------- */
+  const snapshot = () => ({ id: draftId, cart, customer, location, notes, discount });
+  const view = drafts.map(d => d.id === draftId ? snapshot() : d);
+  const loadDraft = d => { setCart(d.cart); setCustomer(d.customer); setLocation(d.location); setNotes(d.notes); setDiscount(d.discount || { type: 'rp', value: '' }); setDraftId(d.id); };
+  const switchDraft = id => {
+    if (id === draftId || addingToOrder) return;
+    const t = drafts.find(d => d.id === id); if (!t) return;
+    setDrafts(view); loadDraft(t);
+  };
+  const addDraft = () => {
+    if (addingToOrder) return;
+    const d = newDraft();
+    setDrafts([...view, d]); loadDraft(d); setInfoOpen(true);
+  };
+  const closeDraft = () => {
+    const rest = view.filter(d => d.id !== draftId);
+    if (rest.length) { setDrafts(rest); loadDraft(rest[0]); }
+    else { const d = newDraft(); setDrafts([d]); loadDraft(d); }
+  };
+  const removeDraft = () => {
+    if (cart.length && !window.confirm('Hapus draf pesanan ini beserta isinya?')) return;
+    closeDraft();
+  };
+  const draftLabel = (d, i) => d.location.trim() ? locLabel(d.location) : `Draf ${i + 1}`;
+
+  const startNewAt = (loc) => {
+    setTableSheet(null);
+    const cur = snapshot();
+    if (!cur.cart.length && !cur.location.trim()) setLocation(loc);
+    else { const d = { ...newDraft(), location: loc }; setDrafts([...view, d]); loadDraft(d); }
+    setPage('Pesanan');
   };
 
-  const addToCartDirect = (item, pakaiSusu = false) => {
-    const finalPrice = pakaiSusu ? item.price + 3000 : item.price;
-    const finalName = pakaiSusu ? `${item.name} + Susu` : item.name;
-    const finalId = pakaiSusu ? `${item.id}-susu` : item.id;
+  /* ---------- keranjang ---------- */
+  const goPay = () => {
+    if (!location.trim()) { flash('Pilih meja dulu sebelum membayar.', 3000); setInfoOpen(true); return; }
+    setPayment('Tunai'); setPaid(''); setShowPay(true);
+  };
 
+  const add = (item) => {
+    if (item.sold_out) { flash(`${item.name} sedang habis.`, 2500); return; }
+    if (item.stock != null && qtyOf(item) >= item.stock) { flash(`Stok ${item.name} tinggal ${item.stock}.`, 3000); return; }
+    if (item.category === 'Minuman' || item.category === 'Kopi') {
+      setVariantTemp(''); setVariantSusu(false); setSelectedItemForVariant(item);
+    } else addToCartDirect(item, false);
+  };
+
+  const addToCartDirect = (item, pakaiSusu = false, suhu = '') => {
+    const finalPrice = pakaiSusu ? item.price + 3000 : item.price;
+    const finalName = `${item.name}${suhu ? ` (${suhu})` : ''}${pakaiSusu ? ' + Susu' : ''}`;
+    const finalId = `${item.id}${suhu ? `-${suhu.toLowerCase()}` : ''}${pakaiSusu ? '-susu' : ''}`;
+    buzz();
     setCart(old => {
       const found = old.find(x => x.id === finalId);
       return found
         ? old.map(x => x.id === finalId ? { ...x, qty: x.qty + 1 } : x)
-        : [...old, { ...item, id: finalId, name: finalName, price: finalPrice, qty: 1 }];
+        : [...old, { id: finalId, menuId: item.id, name: finalName, category: item.category, price: finalPrice, qty: 1 }];
     });
     setSelectedItemForVariant(null);
   };
 
-  const changeQty = (id, delta) => setCart(old => old.map(x => x.id === id ? { ...x, qty: x.qty + delta } : x).filter(x => x.qty > 0));
+  const openBakso = () => { setBaksoPrice(''); setBaksoName(''); setBaksoOpen(true); };
+  const addBakso = () => {
+    const price = Number(baksoPrice);
+    if (!price || price <= 0) { flash('Harga bakso wajib diisi.', 3000); return; }
+    const ket = baksoName.trim();
+    const name = ket ? `Bakso ${ket}` : 'Bakso';
+    const id = `${BAKSO_ID}-${price}-${name.toLowerCase().replace(/\s+/g, '_')}`;
+    buzz();
+    setCart(old => {
+      const found = old.find(x => x.id === id);
+      return found
+        ? old.map(x => x.id === id ? { ...x, qty: x.qty + 1 } : x)
+        : [...old, { id, name, category: 'Bakso', price, qty: 1, custom: true }];
+    });
+    setBaksoOpen(false);
+  };
 
+  // kurangi / hapus item, dengan tombol "Urungkan"
+  const changeQty = (id, delta) => {
+    const curItem = cart.find(x => x.id === id);
+    if (!curItem) return;
+    if (curItem.qty + delta <= 0) {
+      const idx = cart.findIndex(x => x.id === id);
+      setCart(old => old.filter(x => x.id !== id));
+      flash(`${curItem.name} dihapus.`, 5000, { label: 'Urungkan', fn: () => setCart(old => { if (old.some(x => x.id === id)) return old; const n = [...old]; n.splice(Math.min(idx, n.length), 0, curItem); return n; }) });
+    } else setCart(old => old.map(x => x.id === id ? { ...x, qty: x.qty + delta } : x));
+  };
+
+  const decOne = (item) => {
+    const base = String(item.id);
+    const line = [...cart].reverse().find(c => { const id = String(c.id); return id === base || id.startsWith(base + '-') || id.startsWith(base + '~'); });
+    if (line) changeQty(line.id, -1);
+  };
+
+  /* ---------- tahan lama = atur stok / habis ---------- */
+  const pressStart = (item) => {
+    lp.current.fired = false; clearTimeout(lp.current.t);
+    lp.current.t = setTimeout(() => { lp.current.fired = true; buzz(30); setStockItem(item); setStockDraft(item.stock == null ? '' : String(item.stock)); }, 550);
+  };
+  const pressEnd = () => clearTimeout(lp.current.t);
+  const tap = (item) => { if (lp.current.fired) { lp.current.fired = false; return; } add(item); };
+
+  const saveStock = async (item, patch) => {
+    const { error } = await supabase.from('menu_items').update(patch).eq('id', item.id);
+    if (error) { flash('Gagal mengubah stok: ' + error.message); return; }
+    setItems(prev => prev.map(m => m.id === item.id ? { ...m, ...patch } : m));
+    setStockItem(null);
+    flash(patch.sold_out ? `${item.name} ditandai habis.` : `Stok ${item.name} diperbarui.`, 3000);
+  };
+
+  const consumeStock = async (cartItems) => {
+    const used = {};
+    cartItems.forEach(c => { if (c.menuId != null) used[c.menuId] = (used[c.menuId] || 0) + c.qty; });
+    for (const [mid, q] of Object.entries(used)) {
+      const it = items.find(m => String(m.id) === mid);
+      if (!it || it.stock == null) continue;
+      const left = Math.max(0, it.stock - q);
+      const patch = { stock: left, sold_out: left === 0 };
+      const { error } = await supabase.from('menu_items').update(patch).eq('id', it.id);
+      if (!error) setItems(prev => prev.map(m => m.id === it.id ? { ...m, ...patch } : m));
+    }
+  };
+
+  /* ---------- catatan per item ---------- */
+  const openItemNote = (x) => { setNoteItem(x); setNoteDraft(x.note || ''); };
+  const toggleNoteChip = (p) => setNoteDraft(d => {
+    const parts = d.split(',').map(s => s.trim()).filter(Boolean);
+    return (parts.includes(p) ? parts.filter(s => s !== p) : [...parts, p]).join(', ');
+  });
+  const saveItemNote = () => {
+    const x = noteItem;
+    if (!x) return;
+    const text = noteDraft.trim();
+    const baseId = String(x.id).split('~')[0];
+    const newId = text ? `${baseId}~${text.toLowerCase().replace(/\s+/g, '_')}` : baseId;
+    if (text) {
+      const st = { ...noteStats };
+      text.split(',').map(s => s.trim()).filter(Boolean).forEach(p => { st[p] = (st[p] || 0) + 1; });
+      setNoteStats(st); write('z_note_stats', st);
+    }
+    setCart(old => {
+      const c0 = old.find(c => c.id === x.id);
+      if (!c0) return old;
+      const rest = old.filter(c => c.id !== x.id);
+      const dup = rest.find(c => c.id === newId);
+      if (dup) return rest.map(c => c.id === newId ? { ...c, qty: c.qty + c0.qty } : c);
+      return old.map(c => c.id === x.id ? { ...c0, id: newId, note: text } : c);
+    });
+    setNoteItem(null);
+  };
+
+  /* ---------- tambah ke bon lama ---------- */
   const startAddToOrder = (order) => {
-    setAddingToOrder(order);
-    setCart([]);
-    setNotes('');
-    setSelectedOrder(null);
-    setPage('Pesanan');
+    if (!stash.current) stash.current = snapshot();
+    setAddingToOrder(order); setCart([]); setNotes('');
+    setSelectedOrder(null); setTableSheet(null); setPage('Pesanan');
   };
-
-  const cancelAddToOrder = () => {
+  const exitAddition = () => {
+    const s = stash.current; stash.current = null;
     setAddingToOrder(null);
-    setCart([]);
-    setNotes('');
-    setCartOpen(false);
-    setPage('Riwayat');
+    if (s) { setCart(s.cart); setCustomer(s.customer); setLocation(s.location); setNotes(s.notes); setDiscount(s.discount || { type: 'rp', value: '' }); }
+    else { setCart([]); setNotes(''); }
   };
+  const cancelAddToOrder = () => { exitAddition(); setCartOpen(false); setPage('Riwayat'); };
 
   const saveAdditionToOrder = async (method = 'Belum Bayar', tendered = 0) => {
     if (!addingToOrder || !cart.length) return;
     const base = orders.find(o => o.id === addingToOrder.id) || addingToOrder;
-
-    // gabungkan item tambahan ke item lama
     const merged = [...base.items];
     for (const c of cart) {
       const i = merged.findIndex(x => x.id === c.id);
       if (i > -1) merged[i] = { ...merged[i], qty: merged[i].qty + c.qty };
       else merged.push(c);
     }
-    const newTotal = merged.reduce((s, x) => s + x.price * x.qty, 0);
+    const newTotal = calcTotal(merged, base.discount, base.rounding);
     const belumBayar = base.payment === 'Belum Bayar';
-
     const extraNote = notes.trim();
-
-    // pembayaran untuk item tambahan (bon yang memang belum bayar tetap ditagih belakangan)
-    const addTotal = total;
+    const addTotal = subtotal;
     const payNow = !belumBayar && method !== 'Belum Bayar';
     const amount = method === 'Tunai' ? Number(tendered || 0) : addTotal;
     const newPaid = payNow ? (base.paid || 0) + amount : base.paid;
     const newChange = payNow ? (base.change || 0) + Math.max(0, amount - addTotal) : base.change;
     const status = remainOf({ ...base, total: newTotal, paid: newPaid, change: newChange }) > 0 ? 'Belum Lunas' : 'Lunas';
-    const payPatch = { paid: newPaid, change: newChange, status };
     const patch = {
       ...(extraNote ? { notes: base.notes ? `${base.notes} | Tambahan: ${extraNote}` : `Tambahan: ${extraNote}` } : {}),
-      items: merged,
-      total: newTotal,
-      ...payPatch,
-      kitchen_printed: false,
-      customer_printed: false // struk perlu dicetak ulang karena total berubah
+      items: merged, subtotal: sumItems(merged), total: newTotal,
+      paid: newPaid, change: newChange, status,
+      ...(payNow ? { payments: [...(base.payments || []), ledger(method, addTotal, user.username)] } : {}),
+      order_status: ['Siap', 'Diantar'].includes(statusOf(base)) ? 'Baru' : statusOf(base),
+      kitchen_printed: false, customer_printed: false
     };
-
     const { error } = await supabase.from('orders').update(patch).eq('id', base.id);
-    if (error) {
-      setNotice('Gagal menambahkan item: ' + error.message);
-      setTimeout(() => setNotice(''), 5000);
-      return;
-    }
+    if (error) { flash('Gagal menambahkan item: ' + error.message, 5000); return; }
 
     let updated = { ...base, ...patch };
+    const addedCart = cart;
 
-    if (!base.kitchen_printed) {
-      // Tiket dapur bon ini belum pernah dicetak: JANGAN cetak tambahan duluan.
-      // Item sudah digabung ke bon, jadi saat dicetak nanti semua item (lama + tambahan) keluar sekaligus.
-      setNotice(`Tambahan meja ${base.location} tersimpan ke bon. Tiket dapur belum dicetak, cetak dari Riwayat (semua item keluar sekaligus).`);
-    } else {
-      // Tiket dapur lama sudah tercetak: cetak tiket HANYA untuk item tambahan
-      try {
-        await sendPrintJob({
-          ...base,
-          id: `${base.id}-T${Date.now().toString().slice(-4)}`,
-          items: cart,
-          isAddition: true,
-          notes: extraNote
-        }, 'kitchen');
-        await supabase.from('orders').update({ kitchen_printed: true }).eq('id', base.id);
-        updated = { ...updated, kitchen_printed: true };
-        setNotice(`Tambahan untuk meja ${base.location} tersimpan & tiket dapur tercetak.`);
-      } catch (err) {
-        setNotice(`Tambahan meja ${base.location} tersimpan, tapi cetak dapur gagal: ${err.message}`);
-      }
+    // Menu tambahan selalu mengirim tiket dapur otomatis.
+    // Struk kasir tidak pernah dicetak dari proses ini.
+    try {
+      await sendPrintJob(
+        { ...base, id: `${base.id}-T${Date.now().toString().slice(-4)}`, items: addedCart, isAddition: true, notes: extraNote },
+        'kitchen',
+        activePrintUrl
+      );
+      await supabase.from('orders').update({ kitchen_printed: true }).eq('id', base.id);
+      updated = { ...updated, kitchen_printed: true };
+      flash(`Tambahan ${locLabel(base.location)} tersimpan & tiket dapur tercetak.`, 6000);
+    } catch (err) {
+      flash(`Tambahan ${locLabel(base.location)} tersimpan, tapi cetak dapur gagal: ${err.message}`, 8000);
     }
-
+    consumeStock(addedCart);
     setOrders(prev => prev.map(o => o.id === base.id ? updated : o));
-    setCart([]);
-    setNotes('');
-    setAddingToOrder(null);
-    setCartOpen(false);
-    setPage('Riwayat');
-    setSelectedOrder(updated);
-    setTimeout(() => setNotice(''), 6000);
+    exitAddition(); setCartOpen(false); setPage('Riwayat'); setSelectedOrder(updated);
   };
 
   const closePay = () => { setShowPay(false); setSettling(null); };
@@ -258,288 +651,466 @@ function App() {
     if (base.payment === 'Belum Bayar') { saveAdditionToOrder('Belum Bayar', 0); return; }
     setPayment('Tunai'); setPaid(''); setShowPay(true);
   };
-
   const confirmAdditionPayment = async () => {
-    if (payment === 'Tunai' && Number(paid || 0) < total) { setNotice('Uang diterima masih kurang.'); return; }
-    const method = payment;
-    const tendered = Number(paid || 0);
+    if (payment === 'Tunai' && Number(paid || 0) < subtotal) { flash('Uang diterima masih kurang.', 3000); return; }
+    const method = payment, tendered = Number(paid || 0);
     setShowPay(false); setPaid('');
     await saveAdditionToOrder(method, tendered);
   };
 
-  const openSettle = (o) => { setSettling(o); setPayment('Tunai'); setPaid(''); setShowPay(true); };
-
+  /* ---------- pelunasan (boleh sebagian) ---------- */
+  const openSettle = (o) => { setSettling(o); setPayment('Tunai'); setPaid(''); setPartialAmt(''); setShowPay(true); };
   const confirmSettle = async () => {
     const o = settling;
     if (!o || payment === 'Belum Bayar') return;
     const due = remainOf(o);
-    const amount = payment === 'Tunai' ? Number(paid || 0) : due;
-    if (amount < due) { setNotice('Uang diterima masih kurang.'); return; }
-
-    const wasUnpaid = o.payment === 'Belum Bayar';
-    const patch = wasUnpaid
-      ? { payment, paid: amount, change: Math.max(0, amount - due), status: 'Lunas', customer_printed: false }
-      : { paid: (o.paid || 0) + amount, change: (o.change || 0) + Math.max(0, amount - due), status: 'Lunas', customer_printed: false };
-
-    const { error } = await supabase.from('orders').update(patch).eq('id', o.id);
-    if (error) {
-      setNotice('Gagal menyimpan pelunasan: ' + error.message);
-      setTimeout(() => setNotice(''), 5000);
-      return;
+    let received, applied;
+    if (payment === 'Tunai') {
+      received = Number(paid || 0);
+      if (received <= 0) { flash('Masukkan uang yang diterima.', 3000); return; }
+      applied = Math.min(received, due);
+    } else {
+      applied = Math.min(Number(partialAmt) || due, due);
+      if (applied <= 0) { flash('Nominal pembayaran tidak valid.', 3000); return; }
+      received = applied;
     }
+    const chg = received - applied;
+    const wasUnpaid = o.payment === 'Belum Bayar';
+    const left = due - applied;
+    const patch = {
+      ...(wasUnpaid ? { payment } : {}),
+      paid: (wasUnpaid ? 0 : (o.paid || 0)) + received,
+      change: (wasUnpaid ? 0 : (o.change || 0)) + chg,
+      status: left > 0 ? 'Belum Lunas' : 'Lunas',
+      payments: [...(o.payments || []), ledger(payment, applied, user.username)],
+      customer_printed: false
+    };
+    const { error } = await supabase.from('orders').update(patch).eq('id', o.id);
+    if (error) { flash('Gagal menyimpan pembayaran: ' + error.message, 5000); return; }
     const updated = { ...o, ...patch };
     setOrders(prev => prev.map(x => x.id === o.id ? updated : x));
-    if (selectedOrder && selectedOrder.id === o.id) setSelectedOrder(updated);
-    setShowPay(false); setSettling(null); setPaid('');
-    setNotice(`Bon meja ${o.location} lunas (${money(due)}).`);
-    setTimeout(() => setNotice(''), 5000);
+    setShowPay(false); setSettling(null); setPaid(''); setPartialAmt('');
+    flash(left > 0 ? `Dibayar ${money(applied)}, sisa ${money(left)} (${locLabel(o.location)}).` : `Bon ${locLabel(o.location)} lunas (${money(applied)}).`, 5000);
   };
 
+  /* ---------- akun ---------- */
   const loginNow = (e) => {
     e.preventDefault();
-    let uInput = login.username.trim().toLowerCase();
-    let pInput = login.password.trim();
-
+    const uInput = login.username.trim().toLowerCase();
+    const pInput = login.password.trim();
     const foundUser = usersList.find(usr => usr.username.toLowerCase() === uInput && usr.password === pInput);
-
     if (foundUser) {
-      let next = { username: foundUser.username, role: foundUser.role };
-      setUser(next);
-      localStorage.setItem('z_user', JSON.stringify(next));
-      if (foundUser.role === 'Kasir') {
-        setPage('Pesanan');
-      } else {
-        setPage('Dashboard');
-      }
-    } else {
-      setNotice('Username atau password salah.');
-    }
+      const next = { username: foundUser.username, role: foundUser.role };
+      setUser(next); localStorage.setItem('z_user', JSON.stringify(next));
+      setPage(foundUser.role === 'Dapur' ? 'Antrian' : foundUser.role === 'Kasir' ? 'Pesanan' : 'Dashboard');
+    } else flash('Username atau password salah.', 3500);
+  };
+  const logoutNow = () => {
+    localStorage.removeItem('z_user');
+    if (addingToOrder) exitAddition();
+    setUser(null);
   };
 
   const handleCreateUser = async (e) => {
     e.preventDefault();
     if (user.role !== 'Admin') return;
-    const uname = newUser.username.trim();
-    const pwd = newUser.password.trim();
-
-    if (!uname || !pwd) {
-      setNotice('Username dan password wajib diisi.');
-      return;
-    }
-
-    if (usersList.some(u => u.username.toLowerCase() === uname.toLowerCase())) {
-      setNotice('Username sudah digunakan. Pilih nama lain.');
-      return;
-    }
-
+    const uname = newUser.username.trim(), pwd = newUser.password.trim();
+    if (!uname || !pwd) { flash('Username dan password wajib diisi.'); return; }
+    if (usersList.some(u => u.username.toLowerCase() === uname.toLowerCase())) { flash('Username sudah digunakan. Pilih nama lain.'); return; }
     const newUserData = { username: uname, password: pwd, role: newUser.role };
     const { error } = await supabase.from('users').insert([newUserData]);
-
-    if (!error) {
-      setUsersList([...usersList, newUserData]);
-      setNewUser({ username: '', password: '', role: 'Kasir' });
-      setNotice(`Akun karyawan "${uname}" berhasil dibuat.`);
-    } else {
-      setNotice('Gagal membuat akun ke Supabase.');
-    }
-    setTimeout(() => setNotice(''), 4000);
+    if (!error) { setUsersList([...usersList, newUserData]); setNewUser({ username: '', password: '', role: 'Kasir' }); flash(`Akun ${newUser.role} "${uname}" berhasil dibuat.`, 4000); }
+    else flash('Gagal membuat akun ke Supabase.', 4000);
   };
-
   const handleDeleteUser = async (targetUsername) => {
     if (user.role !== 'Admin') return;
-    if (targetUsername.toLowerCase() === 'admin') {
-      setNotice('Akun admin utama tidak dapat dihapus.');
-      return;
-    }
+    if (targetUsername.toLowerCase() === 'admin') { flash('Akun admin utama tidak dapat dihapus.'); return; }
     if (window.confirm(`Yakin ingin menghapus akun "${targetUsername}"?`)) {
       const { error } = await supabase.from('users').delete().eq('username', targetUsername);
-      if (!error) {
-        setUsersList(usersList.filter(u => u.username !== targetUsername));
-        setNotice(`Akun "${targetUsername}" berhasil dihapus.`);
-      } else {
-        setNotice('Gagal menghapus akun.');
-      }
-      setTimeout(() => setNotice(''), 4000);
+      if (!error) { setUsersList(usersList.filter(u => u.username !== targetUsername)); flash(`Akun "${targetUsername}" berhasil dihapus.`, 4000); }
+      else flash('Gagal menghapus akun.', 4000);
     }
   };
 
-  const finish = async () => {
-    if (!location.trim()) { setNotice('Lokasi meja perlu diisi agar pesanan mudah diantar.'); setShowPay(false); return; }
-    if (!cart.length) return;
-
-    const isBelumBayar = payment === 'Belum Bayar';
-    const amount = isBelumBayar ? 0 : (payment === 'Tunai' ? Number(paid || 0) : total);
-
-    if (!isBelumBayar && payment === 'Tunai' && amount < total) {
-      setNotice('Uang diterima masih kurang.');
-      return;
-    }
-
-    const order = {
-      id: 'ZG' + Date.now().toString().slice(-7),
-      date: today,
-      time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-      customer: customer.trim() || '',
-      location: location.trim(),
-      notes,
-      items: cart,
-      total,
-      payment,
-      paid: amount,
-      change: isBelumBayar ? 0 : Math.max(0, amount - total),
-      status: isBelumBayar ? 'Belum Lunas' : 'Lunas',
-      kitchen_printed: false,
-      customer_printed: false,
-      cashier: user.username
-    };
-
-    const { error } = await supabase.from('orders').insert([order]);
-    if (!error) {
-      setOrders([order, ...orders]);
-      setCart([]); setCustomer(''); setLocation(''); setNotes(''); setPaid(''); setShowPay(false); setCartOpen(false); setPage('Riwayat');
-      setNotice(isBelumBayar ? 'Pesanan dicatat (Belum Bayar).' : 'Transaksi berhasil disimpan ke Supabase.');
-    } else {
-      setNotice('Gagal menyimpan pesanan ke database: ' + error.message);
-    }
-    setTimeout(() => setNotice(''), 7500);
-  };
-
-  const clearAllOrders = async () => {
-    if (user.role !== 'Admin') return;
-    if (!orders.length) {
-      setNotice('Tidak ada riwayat untuk dihapus.');
-      return;
-    }
-    if (window.confirm('Yakin ingin menghapus seluruh riwayat pesanan di database?')) {
-      const newLog = {
-        id: Date.now(),
-        who: user.username,
-        role: user.role,
-        time: new Date().toLocaleString('id-ID'),
-        count: orders.length
-      };
-
-      await supabase.from('clear_logs').insert([newLog]);
-      await supabase.from('orders').delete().neq('id', 'ALL');
-
-      setClearLogs([newLog, ...clearLogs]);
-      setOrders([]);
-      setNotice(`Riwayat berhasil dibersihkan oleh ${user.username}.`);
-      setTimeout(() => setNotice(''), 5000);
+  /* ---------- cetak ---------- */
+  // Otomatisasi hanya untuk tiket dapur. Struk kasir harus diminta manual.
+  const autoPrint = async (o) => {
+    try {
+      await sendPrintJob(o, 'kitchen', activePrintUrl);
+      const fields = { kitchen_printed: true };
+      await supabase.from('orders').update(fields).eq('id', o.id);
+      setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...fields } : x));
+      return true;
+    } catch (err) {
+      flash(
+        `Pesanan tersimpan, tetapi tiket dapur gagal dicetak: ${err.message}`,
+        9000,
+        { label: 'Coba cetak tiket dapur', fn: () => printOrder(o, 'kitchen') }
+      );
+      return false;
     }
   };
 
   const printOrder = async (o, type = 'customer') => {
     setPrinting(true);
     try {
-      await sendPrintJob(o, type);
-
+      await sendPrintJob(o, type, activePrintUrl);
       const updateField = type === 'kitchen' ? { kitchen_printed: true } : { customer_printed: true };
       await supabase.from('orders').update(updateField).eq('id', o.id);
-
-      const updatedOrders = orders.map(item => item.id === o.id ? { ...item, ...updateField } : item);
-      setOrders(updatedOrders);
-      if (selectedOrder && selectedOrder.id === o.id) {
-        setSelectedOrder({ ...selectedOrder, ...updateField });
-      }
-
-      setNotice(`${type === 'kitchen' ? 'Tiket dapur' : 'Struk pelanggan'} ${o.id} berhasil dicetak.`);
+      setOrders(prev => prev.map(item => item.id === o.id ? { ...item, ...updateField } : item));
+      flash(`${type === 'kitchen' ? 'Tiket dapur' : 'Struk pelanggan'} ${o.id} berhasil dicetak.`);
     } catch (err) {
-      setNotice(`Gagal mencetak: ${err.message}`);
-    } finally {
-      setPrinting(false);
-      setTimeout(() => setNotice(''), 5000);
-    }
+      flash(`Gagal mencetak: ${err.message}`, 7000, { label: 'Coba lagi', fn: () => printOrder(o, type) });
+    } finally { setPrinting(false); }
   };
 
-  const printAll = async (o) => {
-    setPrinting(true);
+  const refreshPrinter = async () => {
+    setPrinterStatus('Memeriksa...');
     try {
-      if (!o.kitchen_printed) await sendPrintJob(o, 'kitchen');
-      if (!o.customer_printed) await sendPrintJob(o, 'customer');
-
-      const updateFields = { kitchen_printed: true, customer_printed: true };
-      await supabase.from('orders').update(updateFields).eq('id', o.id);
-
-      const updatedOrders = orders.map(item => item.id === o.id ? { ...item, ...updateFields } : item);
-      setOrders(updatedOrders);
-      if (selectedOrder && selectedOrder.id === o.id) {
-        setSelectedOrder({ ...selectedOrder, ...updateFields });
-      }
-
-      setNotice(`Tiket Dapur & Struk Kasir ${o.id} berhasil diproses.`);
-    } catch (err) {
-      setNotice(`Gagal mencetak: ${err.message}`);
-    } finally {
-      setPrinting(false);
-      setTimeout(() => setNotice(''), 5000);
-    }
+      const data = await checkPrintBridge(activePrintUrl);
+      setPrinterStatus('Terhubung'); setPrinterName(data.printer?.name || 'Printer Bluetooth');
+    } catch (err) { setPrinterStatus('Tidak terhubung'); setPrinterName(err.message); }
   };
-
-  const refreshPrinter = async () => { try { const data = await checkPrintBridge(); setPrinterStatus('Terhubung'); setPrinterName(data.printer?.name || 'Printer Bluetooth'); } catch (err) { setPrinterStatus('Tidak terhubung'); setPrinterName(err.message); } };
 
   const testPrinter = async () => {
     setPrinting(true);
     try {
       const content = [receiptText('ZAYGA', 'center', true, 'large'), receiptText('TES KONEKSI PRINTER', 'center', true), receiptDivider(), receiptText('Bluetooth Classic · 58 mm', 'center'), receiptText(new Date().toLocaleString('id-ID'), 'center'), { type: 'feed', lines: 3 }];
-      const r = await fetch(`${printUrl}/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paperWidth: 58, cut: false, reference: 'ZAYGA-TEST-PRINTER', content }) });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.fix || data.detail || data.error || 'Gagal mencetak');
-      setNotice('Tes printer berhasil.');
-    } catch (err) {
-      setNotice(`Tes printer gagal: ${err.message}`);
-    } finally {
-      setPrinting(false);
+      await postPrint(content, 'ZAYGA-TEST-PRINTER', activePrintUrl);
+      flash('Tes printer berhasil.', 3000);
+    } catch (err) { flash(`Tes printer gagal: ${err.message}`, 6000); }
+    finally { setPrinting(false); }
+  };
+
+  /* ---------- transaksi baru ---------- */
+  const finish = async () => {
+    if (saving) return;
+    if (!location.trim()) { flash('Lokasi meja perlu diisi agar pesanan mudah diantar.', 4000); setShowPay(false); return; }
+    if (!cart.length) return;
+    const isBon = payment === 'Belum Bayar';
+    const received = isBon ? 0 : (payment === 'Tunai' ? Number(paid || 0) : grand);
+    if (!isBon && payment === 'Tunai' && received < grand) { flash('Uang diterima masih kurang.', 3000); return; }
+
+    setSaving(true);
+    const order = {
+      id: 'ZG' + Date.now().toString().slice(-7),
+      date: today, time: nowTime(), created_at: new Date().toISOString(),
+      customer: customer.trim() || '', location: location.trim(), notes,
+      items: cart, subtotal, discount: discAmt, rounding: roundAmt, total: grand,
+      payment, paid: received, change: isBon ? 0 : Math.max(0, received - grand),
+      status: isBon ? 'Belum Lunas' : 'Lunas', order_status: 'Baru',
+      payments: isBon ? [] : [ledger(payment, grand, user.username)],
+      kitchen_printed: false, customer_printed: false, cashier: user.username
+    };
+
+    let queued = false;
+    const { error } = await supabase.from('orders').insert([order]);
+    if (error) {
+      if (isNetErr(error)) { queueOrder({ ...order, _queued: true }); queued = true; }
+      else { setSaving(false); flash('Gagal menyimpan pesanan ke database: ' + error.message, 7500); return; }
+    }
+    const local = queued ? { ...order, _queued: true } : order;
+    setOrders(prev => prev.some(x => x.id === order.id) ? prev : [local, ...prev]);
+    const sold = cart;
+    closeDraft(); setPaid(''); setShowPay(false); setCartOpen(false); setSaving(false);
+
+    if (queued) { flash('Tidak ada internet: pesanan diantre dan dikirim otomatis saat online.', 7000); return; }
+    consumeStock(sold);
+    flash('Pesanan tersimpan. Mencetak tiket dapur...', 3000);
+    const ok = await autoPrint(order);
+    if (ok) flash(`${locLabel(order.location)} tersimpan & tiket dapur tercetak.`, 4000);
+  };
+
+  const clearAllOrders = async () => {
+    if (user.role !== 'Admin') return;
+    if (!orders.length) { flash('Tidak ada riwayat untuk dihapus.'); return; }
+    if (window.confirm('Yakin ingin menghapus seluruh riwayat pesanan di database?')) {
+      const newLog = { id: Date.now(), who: user.username, role: user.role, time: new Date().toLocaleString('id-ID'), count: orders.length };
+      await supabase.from('clear_logs').insert([newLog]);
+      await supabase.from('orders').delete().neq('id', 'ALL');
+      setClearLogs([newLog, ...clearLogs]); setOrders([]);
+      flash(`Riwayat berhasil dibersihkan oleh ${user.username}.`);
     }
   };
 
+  /* ---------- status pesanan ---------- */
+  const setStatus = async (o, st) => {
+    const current = statusOf(o);
+    const role = user?.role;
+    const allowed = role === 'Admin'
+      ? STATUSES
+      : role === 'Dapur'
+        ? ['Baru', 'Dimasak', 'Siap']
+        : role === 'Kasir'
+          ? ['Diantar']
+          : [];
+    if (!allowed.includes(st)) {
+      flash('Akun ' + (role || '') + ' tidak memiliki izin untuk mengubah status ini.', 3000);
+      return;
+    }
+    if (role === 'Dapur' && !(current === 'Baru' && st === 'Dimasak' || current === 'Dimasak' && (st === 'Siap' || st === 'Baru') || current === 'Siap' && st === 'Dimasak')) {
+      flash('Dapur hanya dapat memproses pesanan Baru, Dimasak, dan Siap.', 3000);
+      return;
+    }
+    if (role === 'Kasir' && !(current === 'Siap' && st === 'Diantar')) {
+      flash('Kasir hanya dapat menandai pesanan Siap menjadi Diantar.', 3000);
+      return;
+    }
+    if (statusOf(o) === st) return;
+    localStatus.current[o.id] = st;
+    const { error } = await supabase.from('orders').update({ order_status: st }).eq('id', o.id);
+    if (error) { delete localStatus.current[o.id]; flash('Gagal mengubah status: ' + error.message); return; }
+    setOrders(p => p.map(x => x.id === o.id ? { ...x, order_status: st } : x));
+    if (st === 'Siap') flash(`${locLabel(o.location)} siap diantar.`, 3000);
+  };
+
+  /* ---------- pindah / gabung / pisah ---------- */
+  const openMove = (o) => { setMoveOrder(o); setMoveTarget(''); };
+  const closeMove = () => { if (!moveBusy) { setMoveOrder(null); setMoveTarget(''); } };
+
+  const doMove = async (o, destRaw) => {
+    const dest = destRaw.trim();
+    if (!dest || normLoc(dest) === normLoc(o.location)) return;
+    setMoveBusy(true);
+    const { error } = await supabase.from('orders').update({ location: dest }).eq('id', o.id);
+    setMoveBusy(false);
+    if (error) { flash('Gagal memindahkan meja: ' + error.message); return; }
+    setOrders(prev => prev.map(x => x.id === o.id ? { ...o, location: dest } : x));
+    setMoveOrder(null); setMoveTarget('');
+    flash(`Pesanan ${o.id} dipindah dari ${locLabel(o.location)} ke ${locLabel(dest)}.`);
+  };
+
+  const doMerge = async (srcIn, tgtIn) => {
+    const src = orders.find(x => x.id === srcIn.id) || srcIn;
+    const tgt = orders.find(x => x.id === tgtIn.id) || tgtIn;
+    if (src.id === tgt.id) return;
+    if (!window.confirm(`Gabungkan bon ${src.id} (meja ${src.location}) ke bon ${tgt.id} (meja ${tgt.location})?\nBon ${src.id} akan dihapus dan semua itemnya masuk ke bon ${tgt.id}.`)) return;
+
+    const its = tgt.items.map(x => ({ ...x }));
+    for (const c of src.items) {
+      const i = its.findIndex(x => x.id === c.id);
+      if (i > -1) its[i] = { ...its[i], qty: its[i].qty + c.qty };
+      else its.push({ ...c });
+    }
+    const disc = (tgt.discount || 0) + (src.discount || 0);
+    const rnd = (tgt.rounding || 0) + (src.rounding || 0);
+    const mergedTotal = calcTotal(its, disc, rnd);
+    const settled = settledOf(src) + settledOf(tgt);
+    const method = settledOf(tgt) > 0 ? tgt.payment : (settledOf(src) > 0 ? src.payment : 'Belum Bayar');
+    const status = remainOf({ total: mergedTotal, payment: method, paid: settled, change: 0 }) > 0 ? 'Belum Lunas' : 'Lunas';
+    const stIdx = Math.min(STATUSES.indexOf(statusOf(tgt)), STATUSES.indexOf(statusOf(src)));
+    const patch = {
+      items: its, subtotal: sumItems(its), discount: disc, rounding: rnd, total: mergedTotal,
+      payment: method, paid: method === 'Belum Bayar' ? 0 : settled, change: 0, status,
+      payments: (tgt.payments || src.payments) ? [...(tgt.payments || []), ...(src.payments || [])] : null,
+      order_status: STATUSES[stIdx],
+      customer: tgt.customer || src.customer || '',
+      notes: [tgt.notes, src.notes].filter(Boolean).join(' | '),
+      kitchen_printed: !!(tgt.kitchen_printed && src.kitchen_printed), customer_printed: false
+    };
+    const original = {
+      items: tgt.items, subtotal: tgt.subtotal, discount: tgt.discount, rounding: tgt.rounding, total: tgt.total,
+      payment: tgt.payment, paid: tgt.paid, change: tgt.change, status: tgt.status, payments: tgt.payments ?? null,
+      order_status: tgt.order_status, customer: tgt.customer, notes: tgt.notes,
+      kitchen_printed: tgt.kitchen_printed, customer_printed: tgt.customer_printed
+    };
+
+    setMoveBusy(true);
+    const { error } = await supabase.from('orders').update(patch).eq('id', tgt.id);
+    if (error) { setMoveBusy(false); flash('Gagal menggabungkan bon: ' + error.message); return; }
+    const { error: delError } = await supabase.from('orders').delete().eq('id', src.id);
+    if (delError) {
+      await supabase.from('orders').update(original).eq('id', tgt.id);
+      setMoveBusy(false); flash('Gagal menghapus bon asal, penggabungan dibatalkan: ' + delError.message, 6000); return;
+    }
+    setMoveBusy(false);
+    const updated = { ...tgt, ...patch };
+    setOrders(prev => prev.filter(x => x.id !== src.id).map(x => x.id === tgt.id ? updated : x));
+    setSelectedOrder(updated); setMoveOrder(null); setMoveTarget('');
+    flash(`Bon ${locLabel(src.location)} digabung ke ${locLabel(tgt.location)} (${money(mergedTotal)}).`, 6000);
+  };
+
+  const openSplit = (o) => { setSplitOrder(o); setSplitQty({}); setSplitLoc(o.location); setSelectedOrder(null); };
+  const doSplit = async () => {
+    const src = orders.find(x => x.id === splitOrder.id) || splitOrder;
+    const moved = [], kept = [];
+    src.items.forEach((it, i) => {
+      const q = Math.min(splitQty[i] || 0, it.qty);
+      if (q > 0) moved.push({ ...it, qty: q });
+      if (it.qty - q > 0) kept.push({ ...it, qty: it.qty - q });
+    });
+    if (!moved.length || !kept.length) { flash('Pilih sebagian item untuk dipisah dan sisakan minimal satu di bon asal.', 4500); return; }
+    const total1 = calcTotal(kept, src.discount, src.rounding);
+    const total2 = sumItems(moved);
+    const S = settledOf(src);
+    const paid1 = Math.min(S, total1);
+    const R = S - paid1; // kelebihan bayar ikut pindah ke bon baru
+    const srcPatch = {
+      items: kept, subtotal: sumItems(kept), total: total1,
+      paid: src.payment === 'Belum Bayar' ? 0 : paid1, change: 0
+    };
+    srcPatch.status = remainOf({ ...src, ...srcPatch }) > 0 ? 'Belum Lunas' : 'Lunas';
+    const newPayment = R > 0 ? src.payment : 'Belum Bayar';
+    const nb = {
+      id: 'ZG' + Date.now().toString().slice(-7), date: src.date, time: nowTime(), created_at: new Date().toISOString(),
+      customer: src.customer || '', location: (splitLoc || src.location).trim(), notes: '',
+      items: moved, subtotal: total2, discount: 0, rounding: 0, total: total2,
+      payment: newPayment, paid: R > 0 ? R : 0, change: 0,
+      payments: R > 0 ? [] : [], order_status: statusOf(src),
+      kitchen_printed: true, customer_printed: false, cashier: src.cashier
+    };
+    nb.status = remainOf(nb) > 0 ? 'Belum Lunas' : 'Lunas';
+
+    setMoveBusy(true);
+    const { error: e1 } = await supabase.from('orders').insert([nb]);
+    if (e1) { setMoveBusy(false); flash('Gagal membuat bon baru: ' + e1.message, 5000); return; }
+    const { error: e2 } = await supabase.from('orders').update(srcPatch).eq('id', src.id);
+    if (e2) { await supabase.from('orders').delete().eq('id', nb.id); setMoveBusy(false); flash('Gagal memperbarui bon asal, pemisahan dibatalkan: ' + e2.message, 6000); return; }
+    setMoveBusy(false);
+    setOrders(prev => [nb, ...prev.map(x => x.id === src.id ? { ...x, ...srcPatch } : x)].filter((x, i, a) => a.findIndex(y => y.id === x.id) === i));
+    setSplitOrder(null);
+    flash(`Bon dipisah: ${money(total2)} jadi bon baru di ${locLabel(nb.location)}.`, 6000);
+  };
+
+  const deleteOrder = async (o) => {
+    if (user.role !== 'Admin') return;
+    if (!window.confirm(`Yakin ingin menghapus transaksi ${o.id} (meja ${o.location}, ${money(o.total)})? Data tidak bisa dikembalikan.`)) return;
+    const { error } = await supabase.from('orders').delete().eq('id', o.id);
+    if (error) { flash('Gagal menghapus transaksi: ' + error.message); return; }
+    const newLog = { id: Date.now(), who: user.username, role: user.role, time: new Date().toLocaleString('id-ID'), count: 1 };
+    const { error: logError } = await supabase.from('clear_logs').insert([newLog]);
+    if (!logError) setClearLogs(prev => [newLog, ...prev]);
+    setOrders(prev => prev.filter(x => x.id !== o.id));
+    if (selectedOrder && selectedOrder.id === o.id) setSelectedOrder(null);
+    flash(`Transaksi ${o.id} berhasil dihapus.`);
+  };
+
+  const reorder = (o) => {
+    const ok = o.items.filter(i => { const m = items.find(x => String(x.id) === String(i.menuId)); return !(m && m.sold_out); });
+    setCart(old => { const m = [...old]; ok.forEach(i => { const k = m.findIndex(x => x.id === i.id); if (k > -1) m[k] = { ...m[k], qty: m[k].qty + i.qty }; else m.push({ ...i }); }); return m; });
+    setSelectedOrder(null); setPage('Pesanan');
+    flash(ok.length < o.items.length ? 'Sebagian item habis dan dilewati. Sisanya masuk keranjang.' : `${ok.length} menu dimasukkan ke keranjang.`, 3500);
+  };
+
+  /* ---------- menu & pengaturan ---------- */
   const saveMenu = async () => {
     if (user.role !== 'Admin') return;
     if (!menuForm.name.trim() || Number(menuForm.price) <= 0) return;
-
     if (editing) {
       const { error } = await supabase.from('menu_items').update({ name: menuForm.name, category: menuForm.category, price: Number(menuForm.price) }).eq('id', editing);
-      if (!error) {
-        setItems(items.map(x => x.id === editing ? { ...x, ...menuForm, price: Number(menuForm.price) } : x));
-      }
+      if (!error) setItems(items.map(x => x.id === editing ? { ...x, ...menuForm, price: Number(menuForm.price) } : x));
     } else {
       const newItem = { name: menuForm.name, category: menuForm.category, price: Number(menuForm.price), active: true };
       const { data, error } = await supabase.from('menu_items').insert([newItem]).select();
-      if (!error && data) {
-        setItems([...items, data[0]]);
-      }
+      if (!error && data) setItems(prev => prev.some(x => x.id === data[0].id) ? prev : [...prev, data[0]]);
     }
-    setEditing(null);
-    setMenuForm({ name: '', category: 'Mie', price: '' });
+    setEditing(null); setMenuForm({ name: '', category: 'Mie', price: '' });
   };
-
   const toggleMenuStatus = async (item) => {
     if (user.role !== 'Admin') return;
     const newStatus = !item.active;
     const { error } = await supabase.from('menu_items').update({ active: newStatus }).eq('id', item.id);
-    if (!error) {
-      setItems(items.map(m => m.id === item.id ? { ...m, active: newStatus } : m));
-    }
+    if (!error) setItems(items.map(m => m.id === item.id ? { ...m, active: newStatus } : m));
   };
 
   const handlePageChange = (label) => {
-    if (user.role === 'Kasir' && ['Dashboard', 'Laporan', 'Kelola Menu'].includes(label)) {
-      setNotice('Akses ditolak. Fitur ini khusus untuk Admin.');
-      setTimeout(() => setNotice(''), 3000);
+    const allowed = {
+      Admin: ['Dashboard', 'Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Laporan', 'Kelola Menu', 'Pengaturan'],
+      Kasir: ['Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Pengaturan'],
+      Dapur: ['Antrian']
+    };
+    if (!allowed[user?.role]?.includes(label)) {
+      flash('Akses ditolak. Halaman ini tidak tersedia untuk akun ' + (user?.role || '') + '.', 3000);
       return;
     }
-    setPage(label);
-    // batalkan mode tambah item kalau pindah halaman
-    if (label !== 'Pesanan' && addingToOrder) { setAddingToOrder(null); setCart([]); setNotes(''); }
-    setSidebarOpen(false);
+    if (label !== 'Pesanan' && addingToOrder) exitAddition();
+    setPage(label); setSidebarOpen(false);
   };
 
-  const handlePrintUrlChange = (e) => {
-    const val = e.target.value;
-    setPrintUrl(val);
-    localStorage.setItem('z_print_url', JSON.stringify(val));
+  const saveServerPrintUrl = async () => {
+    if (user.role !== 'Admin') return;
+    const val = serverDraft.trim();
+    const { error } = await supabase.from('app_settings').upsert({ key: 'print_url', value: val }, { onConflict: 'key' });
+    if (error) flash('Gagal menyimpan alamat server: ' + error.message, 3000);
+    else { setServerPrintUrl(val); flash('Alamat server pusat tersimpan.', 3000); }
+  };
+  const handleLocalPrintUrlChange = (e) => { const val = e.target.value; setLocalPrintUrl(val); localStorage.setItem('z_local_print_url', JSON.stringify(val)); };
+
+  /* ---------- tutup kasir ---------- */
+  const who = user?.role === 'Admin' ? (shiftWho || user.username) : user?.username;
+  const calcShift = (name) => {
+    const by = { Tunai: 0, QRIS: 0, Transfer: 0 };
+    orders.forEach(o => {
+      if (Array.isArray(o.payments)) o.payments.forEach(p => { if (p.d === today && p.by === name) by[p.m] = (by[p.m] || 0) + p.a; });
+      else if (o.date === today && o.cashier === name && o.payment !== 'Belum Bayar') by[o.payment] = (by[o.payment] || 0) + settledOf(o);
+    });
+    const mine = todays.filter(o => o.cashier === name);
+    return { by, count: mine.length, sales: mine.reduce((s, o) => s + o.total, 0), disc: mine.reduce((s, o) => s + (o.discount || 0), 0), bon: mine.reduce((s, o) => s + remainOf(o), 0) };
+  };
+  const digits = v => v.replace(/\D/g, '').slice(0, 9);
+
+  const shiftContent = (name, sh, opening, counted, diff) => [
+    receiptText('ZAYGA', 'center', true, 'large'), receiptText('TUTUP KASIR', 'center', true), receiptDivider(),
+    receiptText(`Kasir: ${name}`), receiptText(`Tanggal: ${today} ${nowTime()}`), receiptDivider(),
+    { type: 'row', left: 'Transaksi', right: String(sh.count) }, { type: 'row', left: 'Penjualan', right: money(sh.sales) },
+    { type: 'row', left: 'Diskon', right: money(sh.disc) }, receiptDivider(),
+    { type: 'row', left: 'Tunai', right: money(sh.by.Tunai) }, { type: 'row', left: 'QRIS', right: money(sh.by.QRIS) },
+    { type: 'row', left: 'Transfer', right: money(sh.by.Transfer) }, { type: 'row', left: 'Bon belum bayar', right: money(sh.bon) }, receiptDivider(),
+    { type: 'row', left: 'Modal awal', right: money(opening) }, { type: 'row', left: 'Seharusnya di laci', right: money(opening + sh.by.Tunai) },
+    { type: 'row', left: 'Uang di laci', right: money(counted), bold: true }, { type: 'row', left: 'Selisih', right: (diff > 0 ? '+' : '') + money(diff), bold: true },
+    { type: 'feed', lines: 3 }
+  ];
+
+  const saveShift = async (print = false) => {
+    const sh = calcShift(who);
+    const opening = Number(shiftForm.opening) || 0, counted = Number(shiftForm.counted) || 0;
+    const expected = opening + sh.by.Tunai, diff = counted - expected;
+    if (print) {
+      setPrinting(true);
+      try { await postPrint(shiftContent(who, sh, opening, counted, diff), `SHIFT-${who}-${Date.now()}`, activePrintUrl); flash('Laporan tutup kasir tercetak.', 3000); }
+      catch (err) { flash('Gagal mencetak: ' + err.message, 6000); }
+      finally { setPrinting(false); }
+      return;
+    }
+    if (shiftForm.counted === '') { flash('Isi dulu uang tunai yang ada di laci.', 3500); return; }
+    const row = { id: Date.now(), cashier: who, date: today, time: nowTime(), opening_cash: opening, expected_cash: expected, counted_cash: counted, diff, totals: sh, note: shiftForm.note.trim() };
+    const { error } = await supabase.from('shift_closings').insert([row]);
+    if (error) { flash('Gagal menyimpan: ' + error.message + ' (pastikan tabel shift_closings sudah dibuat)', 7000); return; }
+    setShifts(prev => [row, ...prev]); setShiftForm({ opening: '', counted: '', note: '' });
+    flash(diff === 0 ? 'Kasir ditutup. Uang laci pas.' : `Kasir ditutup. Selisih ${diff > 0 ? '+' : ''}${money(diff)}.`, 6000);
   };
 
+  /* ---------- pintasan keyboard ---------- */
+  useEffect(() => {
+    const h = (e) => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      const typing = ['input', 'textarea', 'select'].includes(tag);
+      if (e.key === 'Escape') {
+        if (noteItem) setNoteItem(null); else if (stockItem) setStockItem(null); else if (discOpen) setDiscOpen(false);
+        else if (infoOpen) setInfoOpen(false); else if (showPay) closePay(); else if (baksoOpen) setBaksoOpen(false);
+        else if (selectedItemForVariant) setSelectedItemForVariant(null); else if (splitOrder) setSplitOrder(null);
+        else if (moveOrder) closeMove(); else if (tableSheet) setTableSheet(null); else if (selectedOrder) setSelectedOrder(null);
+        else if (cartOpen) setCartOpen(false);
+        return;
+      }
+      if (typing || !user) return;
+      const anyOverlay = infoOpen || showPay || noteItem || selectedOrder || moveOrder || splitOrder || tableSheet || stockItem || discOpen || baksoOpen || selectedItemForVariant;
+      if (e.key === '/' && page === 'Pesanan') { e.preventDefault(); searchRef.current && searchRef.current.focus(); }
+      if (e.key === 'Enter' && page === 'Pesanan' && !anyOverlay && cart.length && !addingToOrder) goPay();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  });
+
+  const toastEl = toast && (
+    <div className="toast" style={{ zIndex: 1100 }}>
+      <CheckCircle2 size={18} />
+      <span>{toast.msg}</span>
+      {toast.action && <button type="button" className="ta" onClick={() => { toast.action.fn(); setToast(null); }}>{toast.action.label}</button>}
+    </div>
+  );
+
+  /* ===================== Layar login ===================== */
   if (!user) {
     return (
       <div className="login-wrap">
@@ -550,22 +1121,22 @@ function App() {
           <p className="muted">Masuk untuk mulai melayani pelanggan.</p>
           <form onSubmit={loginNow}>
             <label>Username</label>
-            <input value={login.username} onChange={e => setLogin({ ...login, username: e.target.value })} placeholder="Masukkan username" />
+            <input value={login.username} onChange={e => setLogin({ ...login, username: e.target.value })} placeholder="Masukkan username" autoCapitalize="none" autoCorrect="off" />
             <label>Password</label>
             <input type="password" value={login.password} onChange={e => setLogin({ ...login, password: e.target.value })} placeholder="Masukkan password" />
             <button className="primary full">Masuk ke aplikasi</button>
           </form>
-          {notice && <p className="error" style={{marginTop:'1rem', color:'#dc2626', fontSize:'0.85rem'}}>{notice}</p>}
           <p className="tiny">Mode Supabase Cloud · Terhubung secara real-time</p>
         </div>
+        {toastEl}
       </div>
     );
   }
 
+  /* ===================== Aplikasi utama ===================== */
   return (
     <div className="app-shell">
       {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)}></div>}
-      {cartOpen && <div className="backdrop" onClick={() => setCartOpen(false)}></div>}
 
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <button className="mobile-close-btn" onClick={() => setSidebarOpen(false)}><X /></button>
@@ -578,21 +1149,24 @@ function App() {
           <div className="user-chip">
             <div className="avatar">{user.username[0].toUpperCase()}</div>
             <div className="user-info"><b>{user.username}</b><small>{user.role}</small></div>
-            <button className="icon-btn" title="Keluar" onClick={() => { localStorage.removeItem('z_user'); setAddingToOrder(null); setCart([]); setNotes(''); setUser(null) }}><LogOut size={16} /></button>
+            <button className="icon-btn" title="Keluar" onClick={logoutNow}><LogOut size={16} /></button>
           </div>
           <p className="tiny">Zayga POS · Supabase Cloud</p>
         </div>
       </aside>
 
       <main className="main">
+        {(!online || queueCount > 0) && (
+          <div className="offline"><WifiOff size={16} />{!online ? 'Offline.' : 'Menyambungkan ulang.'} {queueCount > 0 ? `${queueCount} pesanan menunggu dikirim.` : 'Pesanan baru akan diantre.'}</div>
+        )}
         <header className="topbar">
           <div className="topbar-left">
-            <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}><MenuIcon size={24}/></button>
-            <div><p className="eyebrow">OPERASIONAL KASIR</p><h2>{page}</h2></div>
+            <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}><MenuIcon size={24} /></button>
+            <div><p className="eyebrow">{user.role === 'Admin' ? 'PANEL ADMIN' : user.role === 'Dapur' ? 'AREA DAPUR' : 'AREA KASIR'}</p><h2>{page}</h2></div>
           </div>
           <div className="top-right">
             <span className="live-dot"></span>
-            <span className="hide-mobile">Supabase Online</span>
+            <span className="hide-mobile">{online ? 'Supabase Online' : 'Offline'}</span>
             <span className="date-pill">
               <Clock size={14} />
               <span className="hide-mobile">{new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
@@ -600,193 +1174,509 @@ function App() {
           </div>
         </header>
 
-        {page === 'Pesanan' && (
-          <div className="pos-layout">
-            <section className="catalog">
-              <div className="section-head">
-                <div>
-                  <h3>{addingToOrder ? `Tambah Menu · Meja ${addingToOrder.location}` : 'Pilih Menu'}</h3>
-                  <p className="muted">{addingToOrder ? 'Pilih menu tambahan, lalu simpan.' : 'Klik item untuk menambah ke pesanan.'}</p>
-                </div>
-                <span className="count-pill">{filtered.length} menu</span>
-              </div>
-              <div className="searchbox">
-                <Search size={17} />
-                <input placeholder="Cari nama menu..." value={query} onChange={e => setQuery(e.target.value)} />
-              </div>
-              <div className="category-row">
-                {categories.map(c => (
-                  <button key={c} onClick={() => setCategory(c)} className={category === c ? 'selected' : ''}>{c}</button>
-                ))}
-              </div>
-              <div className="menu-grid">
-                {filtered.map(x => (
-                  <button className="menu-card" key={x.id} onClick={() => add(x)}>
-                    <div className="food-icon"><Coffee size={24} /></div>
-                    <div className="menu-card-content">
-                      <span className="food-cat">{x.category}</span>
-                      <b>{x.name}</b>
-                      <strong>{money(x.price)}</strong>
+        {/* ================= PESANAN ================= */}
+        {page === 'Pesanan' && user.role !== 'Dapur' && (
+          <div className="po-wrap" style={{ '--po-top': stickyTop + 'px' }}>
+            <section className="po-menu">
+              <div className="po-top">
+                {addingToOrder ? (
+                  <div className="po-ctx add">
+                    <div><small>Menambah ke bon</small><b>Meja {addingToOrder.location} · {addingToOrder.customer || 'Umum'}</b></div>
+                    <button type="button" onClick={cancelAddToOrder}>Batal</button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="dr">
+                      {view.map((d, i) => {
+                        const on = d.id === draftId;
+                        const q = d.cart.reduce((s, x) => s + x.qty, 0);
+                        return (
+                          <div key={d.id} role="button" tabIndex={0} className={'dr-chip ' + (on ? 'on' : '')} onClick={() => switchDraft(d.id)}>
+                            {draftLabel(d, i)}{q > 0 && <em>{q}</em>}
+                            {on && (view.length > 1 || q > 0) && <span className="dr-x" role="button" aria-label="Hapus draf" onClick={e => { e.stopPropagation(); removeDraft(); }}><X size={13} /></span>}
+                          </div>
+                        );
+                      })}
+                      <button type="button" className="dr-add" onClick={addDraft} aria-label="Pesanan baru"><Plus size={16} /> Baru</button>
                     </div>
-                    <span className="add-icon"><Plus size={16} /></span>
-                  </button>
-                ))}
+                    <button type="button" className={'po-ctx ' + (location.trim() ? 'set' : 'empty')} onClick={() => setInfoOpen(true)}>
+                      <MapPin size={18} />
+                      <span className="po-ctx-text">
+                        {location.trim() ? <><b>{locLabel(location)}</b>{customer.trim() && <small> · {customer.trim()}</small>}</> : <b>Pilih meja dulu</b>}
+                      </span>
+                      <em>{location.trim() ? 'Ubah' : 'Atur'}</em>
+                    </button>
+                  </>
+                )}
+                <div className="po-search">
+                  <Search size={17} />
+                  <input ref={searchRef} placeholder="Cari menu..." value={query} onChange={e => setQuery(e.target.value)} />
+                </div>
+                <div className="po-cats">
+                  {menuTabs.map(c => (
+                    <button key={c} type="button" className={category === c ? 'on' : ''} onClick={() => setCategory(c)}>{c === 'Favorit' ? '★ Favorit' : c}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="po-list">
+                {showBakso && (
+                  <div className={'po-item ' + (baksoQty > 0 ? 'on' : '')} role="button" tabIndex={0} onClick={openBakso} onKeyDown={e => { if (e.key === 'Enter') openBakso(); }}>
+                    <div className="po-info"><b>Bakso</b><small>Bakso</small><strong>Harga custom</strong></div>
+                    <div className="po-act">
+                      {baksoQty > 0 && <span className="po-badge">{baksoQty}</span>}
+                      <span className="po-plus"><Plus size={18} /></span>
+                    </div>
+                  </div>
+                )}
+                {filtered.map(x => {
+                  const q = qtyOf(x);
+                  const variant = x.category === 'Minuman' || x.category === 'Kopi';
+                  return (
+                    <div key={x.id} className={'po-item ' + (q > 0 ? 'on ' : '') + (x.sold_out ? 'off' : '')} role="button" tabIndex={0}
+                      onPointerDown={() => pressStart(x)} onPointerUp={pressEnd} onPointerLeave={pressEnd} onPointerCancel={pressEnd}
+                      onContextMenu={e => e.preventDefault()} onClick={() => tap(x)} onKeyDown={e => { if (e.key === 'Enter') add(x); }}>
+                      <div className="po-info">
+                        <b>{x.name}{x.sold_out && <span className="po-tag">Habis</span>}{!x.sold_out && x.stock != null && <span className="po-tag stock">Sisa {x.stock}</span>}</b>
+                        <small>{x.category}</small><strong>{money(x.price)}</strong>
+                      </div>
+                      <div className="po-act">
+                        {q > 0 && !variant ? (
+                          <div className="po-step">
+                            <button type="button" aria-label="Kurangi" onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); decOne(x); }}><Minus size={16} /></button>
+                            <b>{q}</b>
+                            <button type="button" aria-label="Tambah" onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); add(x); }}><Plus size={16} /></button>
+                          </div>
+                        ) : (
+                          <>
+                            {q > 0 && <span className="po-badge">{q}</span>}
+                            <span className="po-plus"><Plus size={18} /></span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {!showBakso && !filtered.length && <div className="po-empty">Menu tidak ditemukan.</div>}
+                {filtered.length > 0 && <div className="po-hint">Tahan lama pada menu untuk tandai habis atau atur stok harian.</div>}
               </div>
             </section>
 
             {(cart.length > 0 || addingToOrder) && (
-              <div className="mobile-cart-fab" onClick={() => setCartOpen(true)}>
-                <div className="fab-info"><ShoppingCart size={20} /><span>{cart.reduce((s, x) => s + x.qty, 0)} item</span></div>
-                <b>{money(total)}</b>
+              <button type="button" className="po-bar" onClick={() => setCartOpen(true)}>
+                <div><small>{cartQty} item{discAmt > 0 ? ' · diskon' : ''}</small><b>{money(netTotal)}</b></div>
+                <span>Lihat Pesanan ›</span>
+              </button>
+            )}
+
+            <div className={'po-cart-wrap ' + (cartOpen ? 'open' : '')}>
+              <div className="po-backdrop" onClick={() => setCartOpen(false)}></div>
+              <aside className="po-cart">
+                <div className="po-handle"></div>
+                <div className="po-cart-head">
+                  <div>
+                    <h3>{addingToOrder ? `Tambahan Meja ${addingToOrder.location}` : 'Pesanan Baru'}</h3>
+                    <p>{cartQty} item · {cart.length} jenis</p>
+                  </div>
+                  <button type="button" className="po-x mob" onClick={() => setCartOpen(false)} aria-label="Tutup"><X size={18} /></button>
+                </div>
+
+                <div className="po-cart-body">
+                  <button type="button" className={'po-ctx po-ctx-row ' + (addingToOrder ? (notes.trim() ? 'set' : '') : (location.trim() ? 'set' : 'empty'))} onClick={() => setInfoOpen(true)}>
+                    {addingToOrder ? <ClipboardList size={18} /> : <MapPin size={18} />}
+                    <span className="po-ctx-text">
+                      {addingToOrder
+                        ? (notes.trim() ? <b>{notes.trim()}</b> : <b>Tambah catatan</b>)
+                        : (location.trim() ? <><b>{locLabel(location)}</b>{customer.trim() && <small> · {customer.trim()}</small>}</> : <b>Pilih meja dulu</b>)}
+                    </span>
+                    <em>{addingToOrder ? (notes.trim() ? 'Ubah' : 'Isi') : (location.trim() ? 'Ubah' : 'Atur')}</em>
+                  </button>
+
+                  {!cart.length ? (
+                    <div className="po-none">Keranjang masih kosong.<br />Pilih menu di daftar.</div>
+                  ) : (
+                    cart.map(x => (
+                      <div className="po-ci" key={x.id}>
+                        <div>
+                          <b>{x.name}</b>
+                          <small>{money(x.price)} / porsi</small>
+                          <button type="button" onClick={() => openItemNote(x)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, padding: '6px 10px', borderRadius: 8, border: `1.5px dashed ${x.note ? '#f59e0b' : '#cbd5e1'}`, background: x.note ? '#fffbeb' : '#fff', color: x.note ? '#92400e' : '#64748b', fontSize: '.78rem', fontWeight: 600, cursor: 'pointer', maxWidth: '100%', textAlign: 'left' }}>
+                            <Pencil size={13} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.note || 'Catatan'}</span>
+                          </button>
+                        </div>
+                        <strong>{money(x.price * x.qty)}</strong>
+                        <div className="po-step">
+                          <button type="button" aria-label="Kurangi" onClick={() => changeQty(x.id, -1)}><Minus size={16} /></button>
+                          <b>{x.qty}</b>
+                          <button type="button" aria-label="Tambah" onClick={() => changeQty(x.id, 1)}><Plus size={16} /></button>
+                        </div>
+                        <div className="po-ci-r" style={{ justifyContent: 'flex-end' }}>
+                          <button type="button" className="po-del" aria-label="Hapus item" onClick={() => changeQty(x.id, -x.qty)}><Trash2 size={16} /></button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="po-cart-foot">
+                  {!addingToOrder && cart.length > 0 && (
+                    <button type="button" className={'po-disc ' + (discAmt > 0 ? 'on' : '')} onClick={() => setDiscOpen(true)}>
+                      <Percent size={15} />{discAmt > 0 ? `Diskon −${money(discAmt)}` : 'Tambah diskon'}<em>{discAmt > 0 ? 'Ubah' : ''}</em>
+                    </button>
+                  )}
+                  {discAmt > 0 && !addingToOrder && <div className="po-sub"><span>Subtotal</span><span>{money(subtotal)}</span></div>}
+                  <div className="po-total">
+                    <span>{addingToOrder ? 'Total tambahan' : 'Total'}</span>
+                    <strong>{money(netTotal)}</strong>
+                  </div>
+                  {addingToOrder ? (
+                    <>
+                      <button type="button" className="po-go" disabled={!cart.length} onClick={startSaveAddition}>Simpan Tambahan</button>
+                      <button type="button" className="po-go alt" onClick={cancelAddToOrder}>Batal</button>
+                    </>
+                  ) : (
+                    <button type="button" className="po-go" disabled={!cart.length} onClick={goPay}>Lanjut Pembayaran</button>
+                  )}
+                </div>
+              </aside>
+            </div>
+
+            {infoOpen && (
+              <div className="po-ov" onClick={() => setInfoOpen(false)}>
+                <div className="po-sheet" onClick={e => e.stopPropagation()}>
+                  <div className="po-handle"></div>
+                  <div className="po-cart-head">
+                    <div>
+                      <h3>{addingToOrder ? 'Catatan tambahan' : 'Detail pesanan'}</h3>
+                      <p>{addingToOrder ? `Untuk bon meja ${addingToOrder.location}` : 'Meja wajib diisi agar pesanan mudah diantar'}</p>
+                    </div>
+                    <button type="button" className="po-x" onClick={() => setInfoOpen(false)} aria-label="Tutup"><X size={18} /></button>
+                  </div>
+                  <div className="po-sheet-body">
+                    {!addingToOrder && (
+                      <>
+                        <span className="po-lbl" style={{ marginTop: 4 }}>Meja</span>
+                        <div className="po-tg">
+                          {Array.from({ length: 40 }, (_, i) => String(i + 1).padStart(2, '0')).map(n => (
+                            <button type="button" key={n} className={'po-tn ' + (location === n ? 'on' : '')} onClick={() => setLocation(n)}>{n}</button>
+                          ))}
+                        </div>
+                        <div className="po-quick">
+                          {['Bawa pulang', 'Meja belakang'].map(q => (
+                            <button type="button" key={q} className={location === q ? 'on' : ''} onClick={() => setLocation(q)}>{q}</button>
+                          ))}
+                          {location && <button type="button" onClick={() => setLocation('')}>Hapus pilihan</button>}
+                        </div>
+                        <input className="po-in" style={{ marginTop: 8 }}
+                          value={/^\d{2}$/.test(location) && Number(location) >= 1 && Number(location) <= 40 ? '' : location}
+                          onChange={e => setLocation(e.target.value)} placeholder="Atau ketik lokasi lain..." />
+
+                        <span className="po-lbl">Nama pelanggan <em>opsional</em></span>
+                        <input className="po-in" value={customer} onChange={e => setCustomer(e.target.value)} placeholder="Masukkan nama..." />
+                      </>
+                    )}
+                    <span className="po-lbl" style={addingToOrder ? { marginTop: 4 } : {}}>{addingToOrder ? 'Catatan tambahan' : 'Catatan khusus'} <em>opsional</em></span>
+                    <textarea className="po-in" rows="3" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Contoh: tidak pedas, es sedikit..." />
+                  </div>
+                  <div className="po-cart-foot">
+                    <button type="button" className="po-go" onClick={() => setInfoOpen(false)}>Selesai</button>
+                  </div>
+                </div>
               </div>
             )}
 
-            <aside className={`order-panel ${cartOpen ? 'open' : ''}`}>
-              <div className="order-title">
-                <div>
-                  <h3>{addingToOrder ? `Tambahan Meja ${addingToOrder.location}` : 'Pesanan Baru'}</h3>
-                  <p className="muted">{addingToOrder ? `${addingToOrder.customer || 'Umum'} · Menu ini akan ditambahkan ke pesanan meja tersebut` : 'Detail pelanggan & keranjang'}</p>
-                </div>
-                <button className="cart-close-btn hide-desktop" onClick={() => setCartOpen(false)}><X size={20}/></button>
-              </div>
-
-              {!addingToOrder && (
-                <div className="customer-fields">
-                  <div className="input-group">
-                    <label><UserRound size={14} /> Nama pelanggan <em>Opsional</em></label>
-                    <input value={customer} onChange={e => setCustomer(e.target.value)} placeholder="Masukkan nama..." />
+            {noteItem && (
+              <div className="po-ov" onClick={() => setNoteItem(null)}>
+                <div className="po-sheet" onClick={e => e.stopPropagation()}>
+                  <div className="po-handle"></div>
+                  <div className="po-cart-head">
+                    <div><h3>Catatan untuk dapur</h3><p>{noteItem.name}</p></div>
+                    <button type="button" className="po-x" onClick={() => setNoteItem(null)} aria-label="Tutup"><X size={18} /></button>
                   </div>
-                  <div className="input-group">
-                    <label><MapPin size={14} /> Lokasi meja <i>wajib</i></label>
-                    <div className="table-picker">
-                      <div className="table-picker-head"><span>Pilih dari 01–40</span></div>
-                      <div className="table-grid">
-                        {Array.from({ length: 40 }, (_, i) => String(i + 1).padStart(2, '0')).map(n => (
-                          <button type="button" key={n} className={'table-number ' + (location === n ? 'chosen' : '')} onClick={() => setLocation(n)}>{n}</button>
-                        ))}
-                      </div>
-                      <input value={location.length === 2 && /^\d{2}$/.test(location) && Number(location) >= 1 && Number(location) <= 40 ? '' : location} onChange={e => setLocation(e.target.value)} placeholder="Atau ketik manual (misal: Bawa pulang)" />
-                      {location && (
-                        <div className="location-selected">
-                          Terpilih: <b>{location}</b>
-                          <button type="button" onClick={() => setLocation('')}>Hapus</button>
-                        </div>
-                      )}
+                  <div className="po-sheet-body">
+                    <div className="po-quick" style={{ marginTop: 0 }}>
+                      {noteChips.map(p => (
+                        <button type="button" key={p} className={noteDraft.split(',').map(s => s.trim()).includes(p) ? 'on' : ''} onClick={() => toggleNoteChip(p)}>{p}</button>
+                      ))}
                     </div>
+                    <input className="po-in" style={{ marginTop: 10 }} value={noteDraft} onChange={e => setNoteDraft(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') saveItemNote(); }} placeholder="Atau ketik sendiri, contoh: sambal dipisah" />
+                    {noteItem.qty > 1 && (
+                      <p style={{ margin: '10px 0 0', fontSize: '.78rem', color: '#64748b' }}>
+                        Catatan berlaku untuk semua {noteItem.qty} porsi. Kalau tiap porsi beda, tambahkan menunya lagi sebagai baris baru.
+                      </p>
+                    )}
                   </div>
-                  <div className="input-group">
-                    <label>Catatan khusus</label>
-                    <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Contoh: tidak pedas, es sedikit..." rows="2" />
-                  </div>
-                </div>
-              )}
-
-              {addingToOrder && (
-                <div className="customer-fields">
-                  <div className="input-group">
-                    <label>Catatan tambahan</label>
-                    <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Contoh: tidak pedas, es sedikit..." rows="2" />
+                  <div className="po-cart-foot">
+                    <button type="button" className="po-go" onClick={saveItemNote}>{noteDraft.trim() ? 'Simpan catatan' : 'Hapus catatan'}</button>
                   </div>
                 </div>
-              )}
-
-              <div className="cart-head">
-                <b>{addingToOrder ? 'Item Tambahan' : 'Item Keranjang'}</b>
-                <span className="cart-count">{cart.length} jenis</span>
               </div>
+            )}
 
-              <div className="cart-list">
-                {!cart.length ? (
-                  <div className="empty-cart">
-                    <ShoppingCart size={32} />
-                    <b>Keranjang Kosong</b>
-                    <span>Pilih menu di sebelah kiri.</span>
+            {discOpen && (
+              <div className="po-ov" onClick={() => setDiscOpen(false)}>
+                <div className="po-sheet" onClick={e => e.stopPropagation()}>
+                  <div className="po-handle"></div>
+                  <div className="po-cart-head">
+                    <div><h3>Diskon</h3><p>Subtotal {money(subtotal)}</p></div>
+                    <button type="button" className="po-x" onClick={() => setDiscOpen(false)} aria-label="Tutup"><X size={18} /></button>
                   </div>
-                ) : (
-                  cart.map(x => (
-                    <div className="cart-item" key={x.id}>
-                      <div className="cart-item-info">
-                        <b>{x.name}</b>
-                        <small>{money(x.price)} / porsi</small>
-                        <strong>{money(x.price * x.qty)}</strong>
-                      </div>
-                      <div className="cart-item-actions">
-                        <div className="qty-control">
-                          <button onClick={() => changeQty(x.id, -1)}><Minus size={14} /></button>
-                          <b>{x.qty}</b>
-                          <button onClick={() => changeQty(x.id, 1)}><Plus size={14} /></button>
-                        </div>
-                        <button className="remove-btn" onClick={() => changeQty(x.id, -x.qty)}><Trash2 size={16} /></button>
-                      </div>
+                  <div className="po-sheet-body">
+                    <div className="po-seg">
+                      {[['rp', 'Rupiah (Rp)'], ['pct', 'Persen (%)']].map(([t, l]) => (
+                        <button type="button" key={t} className={discount.type === t ? 'on' : ''} onClick={() => setDiscount({ type: t, value: '' })}>{l}</button>
+                      ))}
                     </div>
-                  ))
-                )}
-              </div>
-
-              <div className="order-bottom">
-                <div className="total-line">
-                  <span>{addingToOrder ? 'Total Tambahan' : 'Total Pembayaran'}</span>
-                  <strong>{money(total)}</strong>
+                    <input className="po-in" style={{ marginTop: 12 }} inputMode="numeric" autoFocus
+                      value={discount.value} onChange={e => setDiscount({ ...discount, value: e.target.value.replace(/\D/g, '').slice(0, discount.type === 'pct' ? 3 : 7) })}
+                      placeholder={discount.type === 'pct' ? 'Contoh: 10' : 'Contoh: 5000'} />
+                    <div className="po-quick">
+                      {(discount.type === 'pct' ? [5, 10, 15, 20] : [1000, 2000, 5000, 10000]).map(v => (
+                        <button type="button" key={v} className={String(discount.value) === String(v) ? 'on' : ''} onClick={() => setDiscount({ ...discount, value: String(v) })}>{discount.type === 'pct' ? v + '%' : money(v)}</button>
+                      ))}
+                    </div>
+                    <div className="po-prev"><span>Total setelah diskon</span><b>{money(netTotal)}</b></div>
+                  </div>
+                  <div className="po-cart-foot">
+                    <button type="button" className="po-go" onClick={() => setDiscOpen(false)}>Terapkan</button>
+                    {discAmt > 0 && <button type="button" className="po-go warn" onClick={() => { setDiscount({ type: 'rp', value: '' }); setDiscOpen(false); }}>Hapus diskon</button>}
+                  </div>
                 </div>
-                {addingToOrder ? (
-                  <>
-                    <button className="primary full" disabled={!cart.length} onClick={startSaveAddition}>Simpan Tambahan</button>
-                    <button className="secondary full" style={{ marginTop: 8 }} onClick={cancelAddToOrder}>Batal</button>
-                  </>
-                ) : (
-                  <button className="primary full" disabled={!cart.length} onClick={() => setShowPay(true)}>Lanjut Pembayaran</button>
-                )}
               </div>
-            </aside>
+            )}
           </div>
         )}
 
+        {/* ================= DENAH MEJA ================= */}
+        {page === 'Denah' && user.role !== 'Dapur' && (() => {
+          const nums = Array.from({ length: 40 }, (_, i) => String(i + 1).padStart(2, '0'));
+          const stateOf = k => { const l = tableInfo[k] || []; if (!l.length) return 'free'; if (l.some(o => remainOf(o) > 0)) return 'due'; if (l.some(o => statusOf(o) !== 'Diantar')) return 'busy'; return 'free'; };
+          const pretty = { 'bawa pulang': 'Bawa pulang', 'meja belakang': 'Meja belakang' };
+          const extras = [...new Set([...Object.keys(pretty), ...Object.keys(tableInfo).filter(k => !/^\d{2}$/.test(k))])];
+          const stText = { free: 'Kosong', busy: 'Terisi', due: 'Belum lunas' };
+          const cnt = s => nums.filter(n => stateOf(n) === s).length;
+          const cell = (k, label, loc) => {
+            const st = stateOf(k), n = (tableInfo[k] || []).length;
+            return (
+              <button type="button" key={k} className={'tb-cell tb-' + st} onClick={() => setTableSheet({ key: k, label, loc })}>
+                {label.replace('Meja ', '')}<small>{stText[st]}{n > 1 ? ` · ${n} bon` : ''}</small>
+              </button>
+            );
+          };
+          return (
+            <div className="content">
+              <div className="tb">
+                <div className="tb-sum">
+                  <span className="tb-pill"><i style={{ background: '#22c55e' }}></i>Kosong {cnt('free')}</span>
+                  <span className="tb-pill"><i style={{ background: '#eab308' }}></i>Terisi {cnt('busy')}</span>
+                  <span className="tb-pill"><i style={{ background: '#ef4444' }}></i>Belum lunas {cnt('due')}</span>
+                </div>
+                <div className="tb-grid">{nums.map(n => cell(n, 'Meja ' + n, n))}</div>
+                <div className="tb-ex">{extras.map(k => cell(k, pretty[k] || tableInfo[k]?.[0]?.location || k, pretty[k] || tableInfo[k]?.[0]?.location || k))}</div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ================= ANTRIAN DAPUR ================= */}
+        {page === 'Antrian' && (() => {
+          const act = todays.filter(o => statusOf(o) !== 'Diantar').sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+          const cnt = s => act.filter(o => statusOf(o) === s).length;
+          const shown = qTab === 'Semua' ? act : act.filter(o => statusOf(o) === qTab);
+          const mins = o => o.created_at ? Math.max(0, Math.round((Date.now() - Date.parse(o.created_at)) / 60000)) : null;
+          const isKitchen = user.role === 'Dapur';
+          const isCashier = user.role === 'Kasir';
+          const tabs = isKitchen ? ['Semua', 'Baru', 'Dimasak', 'Siap'] : isCashier ? ['Siap'] : ['Semua', 'Baru', 'Dimasak', 'Siap'];
+          const visibleOrders = isCashier ? shown.filter(o => statusOf(o) === 'Siap') : shown;
+          return (
+            <div className="content">
+              <div className="panel" style={{ marginBottom: 14, padding: '14px 16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ width: 42, height: 42, borderRadius: 13, display: 'grid', placeItems: 'center', background: isKitchen ? '#fff7ed' : '#ecfdf5', color: isKitchen ? '#c2410c' : '#047857' }}>
+                    {isKitchen ? <ChefHat size={22} /> : <CheckCircle2 size={22} />}
+                  </span>
+                  <div>
+                    <b>{isKitchen ? 'Area kerja dapur' : isCashier ? 'Pesanan siap diantar' : 'Pemantauan antrian pesanan'}</b>
+                    <p className="muted" style={{ margin: '3px 0 0' }}>{isKitchen ? 'Kelola pesanan masuk sampai siap disajikan. Informasi harga dan pembayaran tidak ditampilkan.' : isCashier ? 'Pesanan dari dapur akan muncul di sini saat statusnya Siap.' : 'Pantau proses pesanan dari awal hingga selesai.'}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="qq">
+                <div className="st-tabs" role="tablist">
+                  {tabs.map(t => (
+                    <button key={t} type="button" className={'st-tab ' + (qTab === t ? 'on' : '')} onClick={() => setQTab(t)}>{t} ({t === 'Semua' ? act.length : cnt(t)})</button>
+                  ))}
+                </div>
+                <div className="qq-grid">
+                  {visibleOrders.map(o => {
+                    const st = statusOf(o), m = mins(o);
+                    return (
+                      <div key={o.id} className={'qq-card ' + st}>
+                        <div className="qq-head">
+                          <div className="qq-meja">{String(o.location).length > 6 ? String(o.location).slice(0, 6) : o.location}</div>
+                          <div><b>{o.customer || 'Umum'} · {o.items.reduce((s, x) => s + x.qty, 0)} porsi</b><small>{o.time}{m != null ? ` · ${m} menit lalu` : ''} · {o.id}</small></div>
+                          <span className="dt-chip" style={{ background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span>
+                        </div>
+                        <div className="qq-items">
+                          {o.items.map((it, i) => <div key={i}>{it.qty}× {it.name}{it.note && <small>» {it.note}</small>}</div>)}
+                          {o.notes && <small>Catatan: {o.notes}</small>}
+                        </div>
+                        <div className="qq-act">
+                          {isKitchen && st === 'Dimasak' && <button type="button" className="ghost" onClick={() => setStatus(o, 'Baru')}>Kembalikan</button>}
+                          {isKitchen && st === 'Siap' && <button type="button" className="ghost" onClick={() => setStatus(o, 'Dimasak')}>Kembalikan ke dapur</button>}
+                          {isKitchen && st === 'Baru' && <button type="button" onClick={() => setStatus(o, 'Dimasak')}>Mulai masak</button>}
+                          {isKitchen && st === 'Dimasak' && <button type="button" onClick={() => setStatus(o, 'Siap')}>Tandai siap</button>}
+                          {isCashier && st === 'Siap' && <button type="button" onClick={() => setStatus(o, 'Diantar')}>Tandai sudah diantar</button>}
+                          {!isKitchen && !isCashier && st !== 'Diantar' && <button type="button" onClick={() => setStatus(o, STATUSES[STATUSES.indexOf(st) + 1])}>{NEXT_LABEL[st]}</button>}
+                          {!isKitchen && !isCashier && st !== 'Baru' && <button type="button" className="ghost" onClick={() => setStatus(o, STATUSES[STATUSES.indexOf(st) - 1])}>Mundur</button>}
+                          {!isKitchen && <button type="button" className="ghost" onClick={() => setSelectedOrder(o)}>Detail</button>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {!shown.length && <div className="st-empty">Tidak ada pesanan di antrian.</div>}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ================= DASHBOARD ================= */}
         {page === 'Dashboard' && user.role === 'Admin' && (
           <div className="content">
             <div className="stats-grid">
               <Stat icon={<Wallet />} label="Penjualan hari ini" value={money(todays.reduce((s, o) => s + o.total, 0))} />
               <Stat icon={<ClipboardList />} label="Transaksi hari ini" value={todays.length} />
-              <Stat icon={<Utensils />} label="Menu tersedia" value={items.filter(x => x.active).length} />
+              <Stat icon={<Utensils />} label="Menu tersedia" value={items.filter(x => x.active && !x.sold_out).length} />
               <Stat icon={<ShoppingCart />} label="Rata-rata transaksi" value={money(todays.length ? Math.round(todays.reduce((s, o) => s + o.total, 0) / todays.length) : 0)} />
             </div>
             <div className="panel">
               <div className="section-head">
-                <div>
-                  <h3>Transaksi terbaru</h3>
-                  <p className="muted">Aktivitas pesanan terakhir.</p>
-                </div>
+                <div><h3>Transaksi terbaru</h3><p className="muted">Aktivitas pesanan terakhir.</p></div>
                 <button className="text-btn" onClick={() => setPage('Riwayat')}>Lihat semua</button>
               </div>
-              <OrdersTable orders={orders.slice(0, 6)} printOrder={printOrder} onSelectOrder={setSelectedOrder} />
+              <OrdersTable orders={orders.slice(0, 6)} printOrder={printOrder} onSelectOrder={setSelectedOrder} onDelete={deleteOrder} />
             </div>
           </div>
         )}
 
-        {page === 'Riwayat' && (
-          <div className="content">
-            <div className="panel">
-              <div className="section-head">
-                <div>
-                  <h3>Riwayat transaksi</h3>
-                  <p className="muted">Klik salah satu transaksi untuk melihat detail pesanan.</p>
+        {/* ================= RIWAYAT ================= */}
+        {page === 'Riwayat' && user.role !== 'Dapur' && (() => {
+          const list = histFilter === 'Hari ini' ? todays : histFilter === 'Belum lunas' ? orders.filter(o => remainOf(o) > 0) : orders;
+          return (
+            <div className="content">
+              <div className="panel">
+                <div className="section-head">
+                  <div><h3>Riwayat transaksi</h3><p className="muted">Ketuk transaksi untuk melihat detail pesanan.</p></div>
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span className="count-pill">{list.length} transaksi</span>
+                    {orders.length > 0 && user.role === 'Admin' && (
+                      <button className="danger-btn" onClick={clearAllOrders}
+                        style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5', padding: '0.5rem 0.8rem', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <Trash2 size={14} /> Bersihkan Riwayat
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-                  <span className="count-pill">{orders.length} transaksi</span>
-                  {orders.length > 0 && user.role === 'Admin' && (
-                    <button
-                      onClick={clearAllOrders}
-                      style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5', padding: '0.4rem 0.8rem', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <Trash2 size={14}/> Bersihkan Riwayat
-                    </button>
-                  )}
+                <div className="po-cats" style={{ marginBottom: 12 }}>
+                  {['Hari ini', 'Belum lunas', 'Semua'].map(f => <button key={f} type="button" className={histFilter === f ? 'on' : ''} onClick={() => setHistFilter(f)}>{f}</button>)}
+                </div>
+                <OrdersTable orders={list} printOrder={printOrder} onSelectOrder={setSelectedOrder} onDelete={user.role === 'Admin' ? deleteOrder : null} />
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ================= TUTUP KASIR ================= */}
+        {page === 'Tutup Kasir' && user.role !== 'Dapur' && (() => {
+          const sh = calcShift(who);
+          const opening = Number(shiftForm.opening) || 0, counted = Number(shiftForm.counted) || 0;
+          const expected = opening + sh.by.Tunai, diff = counted - expected;
+          const names = [...new Set([user.username, ...todays.map(o => o.cashier)])];
+          const hist = shifts.filter(s => user.role === 'Admin' || s.cashier === user.username).slice(0, 10);
+          return (
+            <div className="content">
+              <div className="st">
+                <div className="st-grid">
+                  <div className="st-card">
+                    <div className="st-card-head">
+                      <span className="st-ico"><Lock size={20} /></span>
+                      <div><h3>Rekap shift hari ini</h3><p>Uang yang diterima {who} sejak pagi.</p></div>
+                    </div>
+                    {user.role === 'Admin' && (
+                      <div className="st-field" style={{ marginBottom: 12 }}>
+                        <label className="st-label">Kasir</label>
+                        <select className="st-input" value={who} onChange={e => setShiftWho(e.target.value)}>
+                          {names.map(n => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    <div className="sh-row"><span>Jumlah transaksi</span><b>{sh.count}</b></div>
+                    <div className="sh-row"><span>Penjualan</span><b>{money(sh.sales)}</b></div>
+                    <div className="sh-row"><span>Diskon diberikan</span><b>{money(sh.disc)}</b></div>
+                    <div className="sh-row"><span>Tunai diterima</span><b>{money(sh.by.Tunai)}</b></div>
+                    <div className="sh-row"><span>QRIS</span><b>{money(sh.by.QRIS)}</b></div>
+                    <div className="sh-row"><span>Transfer</span><b>{money(sh.by.Transfer)}</b></div>
+                    <div className="sh-row"><span>Bon belum dibayar</span><b>{money(sh.bon)}</b></div>
+                  </div>
+
+                  <div className="st-card">
+                    <div className="st-card-head">
+                      <span className="st-ico"><Wallet size={20} /></span>
+                      <div><h3>Hitung uang di laci</h3><p>Isi modal awal dan uang tunai yang ada sekarang.</p></div>
+                    </div>
+                    <div className="st-field">
+                      <label className="st-label">Modal awal laci (Rp)</label>
+                      <input className="st-input" inputMode="numeric" placeholder="0" value={shiftForm.opening} onChange={e => setShiftForm({ ...shiftForm, opening: digits(e.target.value) })} />
+                      {opening > 0 && <span className="st-hint">{money(opening)}</span>}
+                    </div>
+                    <div className="st-field">
+                      <label className="st-label">Uang tunai di laci (Rp)</label>
+                      <input className="st-input" inputMode="numeric" placeholder="0" value={shiftForm.counted} onChange={e => setShiftForm({ ...shiftForm, counted: digits(e.target.value) })} />
+                      {counted > 0 && <span className="st-hint">{money(counted)}</span>}
+                    </div>
+                    <div className="st-field">
+                      <label className="st-label">Catatan <span style={{ fontWeight: 500, color: '#94a3b8' }}>opsional</span></label>
+                      <input className="st-input" value={shiftForm.note} onChange={e => setShiftForm({ ...shiftForm, note: e.target.value })} placeholder="Contoh: ada kembalian kurang" />
+                    </div>
+                    <div className="sh-row" style={{ marginTop: 10 }}><span>Seharusnya di laci</span><b>{money(expected)}</b></div>
+                    {shiftForm.counted !== '' && (
+                      <div className={'sh-diff ' + (diff === 0 ? 'ok' : 'bad')}>
+                        <span>{diff === 0 ? 'Uang laci pas' : diff > 0 ? 'Lebih' : 'Kurang'}</span><b>{diff === 0 ? money(0) : money(Math.abs(diff))}</b>
+                      </div>
+                    )}
+                    <div className="st-actions">
+                      <button type="button" className="st-btn" disabled={printing} onClick={() => saveShift(true)}><Printer size={16} /> Cetak</button>
+                      <button type="button" className="st-btn primary" onClick={() => saveShift(false)}><Save size={16} /> Tutup kasir</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="st-card">
+                  <div className="st-card-head">
+                    <span className="st-ico"><ClipboardList size={20} /></span>
+                    <div><h3>Riwayat tutup kasir</h3><p>10 penutupan terakhir.</p></div>
+                  </div>
+                  <div className="st-list">
+                    {hist.map(s => (
+                      <div className="st-li" key={s.id}>
+                        <div className="st-av">{String(s.cashier || '?')[0].toUpperCase()}</div>
+                        <div className="st-li-main"><b>{s.cashier} · {s.date}</b><small>{s.time} · laci {money(s.counted_cash)}{s.note ? ` · ${s.note}` : ''}</small></div>
+                        <span className="st-log-n" style={{ color: s.diff === 0 ? '#16a34a' : '#dc2626' }}>{s.diff === 0 ? 'Pas' : (s.diff > 0 ? '+' : '−') + money(Math.abs(s.diff))}</span>
+                      </div>
+                    ))}
+                    {!hist.length && <div className="st-empty">Belum ada penutupan kasir.</div>}
+                  </div>
                 </div>
               </div>
-              <OrdersTable orders={orders} printOrder={printOrder} onSelectOrder={setSelectedOrder} />
             </div>
-          </div>
-        )}
+          );
+        })()}
 
+        {/* ================= LAPORAN ================= */}
         {page === 'Laporan' && user.role === 'Admin' && (
           <div className="content">
             <div className="stats-grid">
@@ -800,6 +1690,7 @@ function App() {
               <p className="muted">Rekap berdasarkan metode pembayaran.</p>
               <div className="report-wrap">
                 <div className="report-row"><span>Sisa belum dibayar (semua bon)</span><b>{money(orders.reduce((s, o) => s + remainOf(o), 0))}</b></div>
+                <div className="report-row"><span>Total diskon diberikan</span><b>{money(orders.reduce((s, o) => s + (o.discount || 0), 0))}</b></div>
                 {['Tunai', 'QRIS', 'Transfer', 'Belum Bayar'].map(m => (
                   <div key={m} className="report-row">
                     <span>{m}</span>
@@ -811,43 +1702,34 @@ function App() {
           </div>
         )}
 
+        {/* ================= KELOLA MENU ================= */}
         {page === 'Kelola Menu' && user.role === 'Admin' && (
           <div className="content">
             <div className="panel">
               <div className="section-head">
                 <div>
                   <h3>Kelola menu</h3>
-                  <p className="muted">Tambah, ubah harga, atau status menu.</p>
+                  <p className="muted">Tambah, ubah harga, atau status menu. Menu Bakso berdiri sendiri dengan harga custom, jadi tidak perlu diatur di sini.</p>
                 </div>
               </div>
-
               <div className="menu-editor">
                 <input placeholder="Nama menu" value={menuForm.name} onChange={e => setMenuForm({ ...menuForm, name: e.target.value })} />
                 <select value={menuForm.category} onChange={e => setMenuForm({ ...menuForm, category: e.target.value })}>
                   {categories.slice(1).map(c => <option key={c}>{c}</option>)}
                 </select>
-                <input type="number" placeholder="Harga" value={menuForm.price} onChange={e => setMenuForm({ ...menuForm, price: e.target.value })} />
+                <input type="number" inputMode="numeric" placeholder="Harga" value={menuForm.price} onChange={e => setMenuForm({ ...menuForm, price: e.target.value })} />
                 <button className="primary" onClick={saveMenu}>{editing ? 'Simpan' : 'Tambah'}</button>
               </div>
-
               <div className="table-wrap">
                 <table>
-                  <thead>
-                    <tr>
-                      <th>Nama menu</th>
-                      <th>Kategori</th>
-                      <th>Harga</th>
-                      <th>Status</th>
-                      <th>Aksi</th>
-                    </tr>
-                  </thead>
+                  <thead><tr><th>Nama menu</th><th>Kategori</th><th>Harga</th><th>Status</th><th>Aksi</th></tr></thead>
                   <tbody>
                     {items.map(x => (
                       <tr key={x.id}>
-                        <td><b>{x.name}</b></td>
-                        <td><span className="cat-badge">{x.category}</span></td>
-                        <td>{money(x.price)}</td>
-                        <td><span className={x.active ? 'status-done' : 'status-off'}>{x.active ? 'Aktif' : 'Nonaktif'}</span></td>
+                        <td data-label="Nama menu"><b>{x.name}</b></td>
+                        <td data-label="Kategori"><span className="cat-badge">{x.category}</span></td>
+                        <td data-label="Harga">{money(x.price)}</td>
+                        <td data-label="Status"><span className={x.active ? 'status-done' : 'status-off'}>{!x.active ? 'Nonaktif' : x.sold_out ? 'Habis' : x.stock != null ? `Stok ${x.stock}` : 'Aktif'}</span></td>
                         <td>
                           <div className="action-cell">
                             <button className="text-btn" onClick={() => { setEditing(x.id); setMenuForm({ name: x.name, category: x.category, price: x.price }) }}>Edit</button>
@@ -863,342 +1745,567 @@ function App() {
           </div>
         )}
 
-        {page === 'Pengaturan' && (
-          <div className="content">
-            <div className="panel settings-panel">
-
-              <h3>Pengaturan Printer</h3>
-              <p className="muted">Hubungkan aplikasi POS ini dengan server Cleanter.</p>
-
-              <div className="input-group" style={{ marginTop: '1rem', marginBottom: '1.5rem' }}>
-                <label>Alamat IP Server Cleanter</label>
-                <input
-                  value={printUrl}
-                  onChange={handlePrintUrlChange}
-                  placeholder="http://localhost:9100"
-                />
-                <small className="muted">
-                  • <b>Jika buka di HP:</b> Biarkan `http://localhost:9100`<br/>
-                  • <b>Jika buka di Laptop:</b> Masukkan IP HP Anda. Contoh: `http://192.168.1.6:9100`
-                </small>
-              </div>
-
-              <div className="printer-card">
-                <div className="printer-card-head">
-                  <div>
-                    <b>Status Koneksi Bluetooth</b>
-                    <small>Via Cleanter App</small>
-                  </div>
-                  <span className={'printer-state ' + (printerStatus === 'Terhubung' ? 'online' : 'offline')}>{printerStatus}</span>
+        {/* ================= PENGATURAN ================= */}
+        {page === 'Pengaturan' && user.role !== 'Dapur' && (() => {
+          const isAdmin = user.role === 'Admin';
+          const onl = printerStatus === 'Terhubung';
+          const checking = printerStatus === 'Memeriksa...';
+          const tabs = [
+            { id: 'printer', label: 'Printer', icon: Printer },
+            ...(isAdmin ? [{ id: 'akun', label: 'Karyawan', icon: Users }, { id: 'log', label: 'Log hapus', icon: ShieldAlert }] : []),
+            { id: 'profil', label: 'Akun saya', icon: UserRound }
+          ];
+          const tab = tabs.some(t => t.id === setTab) ? setTab : 'printer';
+          const serverDirty = serverDraft.trim() !== serverPrintUrl.trim();
+          return (
+            <div className="content">
+              <div className="st">
+                <div className="st-tabs" role="tablist">
+                  {tabs.map(t => (
+                    <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={'st-tab ' + (tab === t.id ? 'on' : '')} onClick={() => setSetTab(t.id)}>
+                      <t.icon size={17} /> {t.label}
+                    </button>
+                  ))}
                 </div>
-                <p className="muted">{printerName || 'Pastikan Cleanter aktif dan Server sudah dinyalakan.'}</p>
-                <div className="printer-actions">
-                  <button className="secondary" onClick={refreshPrinter}>Cek Koneksi</button>
-                  <button className="primary" disabled={printing} onClick={testPrinter}><Printer size={16} /> {printing ? 'Memproses...' : 'Cetak Tes'}</button>
-                </div>
-              </div>
 
-              {user.role === 'Admin' && (
-                <div style={{ marginTop: '2.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.5rem' }}>
-                    <Users size={18} color="#2563eb"/>
-                    <h3 style={{ margin: 0 }}>Kelola Akun Karyawan</h3>
+                {tab === 'printer' && (
+                  <div className="st-grid">
+                    <div className="st-card">
+                      <div className="st-card-head">
+                        <span className="st-ico"><Printer size={20} /></span>
+                        <div><h3>Status printer</h3><p>Cek apakah printer Bluetooth sudah siap mencetak lewat aplikasi Cleanter.</p></div>
+                      </div>
+                      <div className={'st-status ' + (onl ? 'ok' : checking ? '' : 'bad')}>
+                        <span className="st-dot"></span>
+                        <div className="st-status-text">
+                          <b>{onl ? 'Printer terhubung' : checking ? 'Memeriksa koneksi...' : 'Printer belum terhubung'}</b>
+                          <span>{printerName || 'Pastikan aplikasi Cleanter aktif dan Bluetooth printer menyala.'}</span>
+                        </div>
+                      </div>
+                      <p className="st-active">Alamat yang dipakai sekarang: <b>{activePrintUrl}</b></p>
+                      <div className="st-actions">
+                        <button type="button" className="st-btn" onClick={refreshPrinter}><RefreshCw size={16} /> Cek ulang</button>
+                        <button type="button" className="st-btn primary" disabled={printing} onClick={testPrinter}><Printer size={16} /> {printing ? 'Mencetak...' : 'Cetak tes'}</button>
+                      </div>
+                    </div>
+                    <div className="st-card">
+                      <div className="st-card-head">
+                        <span className="st-ico"><Server size={20} /></span>
+                        <div><h3>Alamat printer</h3><p>Atur ke mana struk dan tiket dapur dikirim.</p></div>
+                      </div>
+                      <div className="st-field">
+                        <label className="st-label"><Server size={15} /> Server pusat (semua kasir)</label>
+                        <div className="st-row">
+                          <input className="st-input" inputMode="url" value={serverDraft} onChange={e => setServerDraft(e.target.value)} placeholder="http://192.168.1.100:9100" disabled={!isAdmin} />
+                          {isAdmin && <button type="button" className="st-btn primary" disabled={!serverDirty} onClick={saveServerPrintUrl}><Save size={16} /> Simpan</button>}
+                        </div>
+                        <span className="st-hint">{isAdmin ? 'Tersimpan di cloud, jadi otomatis dipakai semua perangkat kasir.' : 'Hanya Admin yang bisa mengubah alamat server pusat.'}</span>
+                      </div>
+                      <div className="st-field">
+                        <label className="st-label"><Smartphone size={15} /> Khusus perangkat ini</label>
+                        <input className="st-input" inputMode="url" value={localPrintUrl} onChange={handleLocalPrintUrlChange} placeholder="http://localhost:9100" />
+                        <span className="st-hint">Hanya berlaku di perangkat ini. Kalau server pusat terisi, alamat server pusat yang dipakai lebih dulu.</span>
+                      </div>
+                    </div>
                   </div>
-                  <p className="muted" style={{ marginBottom: '1rem' }}>Buat atau hapus akun kasir baru untuk karyawan.</p>
+                )}
 
-                  <form onSubmit={handleCreateUser} className="menu-editor" style={{ marginBottom: '1rem' }}>
-                    <input
-                      placeholder="Username baru"
-                      value={newUser.username}
-                      onChange={e => setNewUser({ ...newUser, username: e.target.value })}
-                    />
-                    <input
-                      type="password"
-                      placeholder="Password"
-                      value={newUser.password}
-                      onChange={e => setNewUser({ ...newUser, password: e.target.value })}
-                    />
-                    <select
-                      value={newUser.role}
-                      onChange={e => setNewUser({ ...newUser, role: e.target.value })}
-                    >
-                      <option value="Kasir">Kasir</option>
-                      <option value="Admin">Admin</option>
-                    </select>
-                    <button className="primary" type="submit"><UserPlus size={16}/> Tambah Akun</button>
-                  </form>
-
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Username</th>
-                          <th>Peran (Role)</th>
-                          <th>Aksi</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                {tab === 'akun' && isAdmin && (
+                  <div className="st-grid">
+                    <div className="st-card">
+                      <div className="st-card-head">
+                        <span className="st-ico"><UserPlus size={20} /></span>
+                        <div><h3>Tambah akun karyawan</h3><p>Buat akun baru supaya karyawan bisa masuk ke aplikasi.</p></div>
+                      </div>
+                      <form onSubmit={handleCreateUser} className="st-form">
+                        <input className="st-input" autoComplete="off" placeholder="Username" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} />
+                        <div className="st-pass">
+                          <input className="st-input" autoComplete="new-password" type={showPwd ? 'text' : 'password'} placeholder="Password" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
+                          <button type="button" className="st-eye" onClick={() => setShowPwd(v => !v)} aria-label={showPwd ? 'Sembunyikan password' : 'Tampilkan password'}>
+                            {showPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+                          </button>
+                        </div>
+                        <div className="st-seg full">
+                          {['Kasir', 'Dapur', 'Admin'].map(r => <button key={r} type="button" className={newUser.role === r ? 'on' : ''} onClick={() => setNewUser({ ...newUser, role: r })}>{r}</button>)}
+                        </div>
+                        <button className="st-btn primary full" type="submit"><UserPlus size={16} /> Tambah akun</button>
+                      </form>
+                    </div>
+                    <div className="st-card">
+                      <div className="st-card-head">
+                        <span className="st-ico"><Users size={20} /></span>
+                        <div><h3>Daftar akun</h3><p>{usersList.length} akun terdaftar.</p></div>
+                      </div>
+                      <div className="st-list">
                         {usersList.map(u => (
-                          <tr key={u.username}>
-                            <td><b>{u.username}</b></td>
-                            <td><span className="cat-badge">{u.role}</span></td>
-                            <td>
-                              {u.username.toLowerCase() !== 'admin' ? (
-                                <button className="text-btn" style={{ color: '#dc2626' }} onClick={() => handleDeleteUser(u.username)}>Hapus</button>
-                              ) : (
-                                <span className="muted" style={{ fontSize: '0.8rem' }}>Utama</span>
-                              )}
-                            </td>
-                          </tr>
+                          <div className="st-li" key={u.username}>
+                            <div className="st-av">{u.username[0].toUpperCase()}</div>
+                            <div className="st-li-main">
+                              <b>{u.username}</b>
+                              <small><span className={'st-badge ' + (u.role === 'Admin' ? 'admin' : '')}>{u.role}</span></small>
+                            </div>
+                            {u.username.toLowerCase() !== 'admin'
+                              ? <button type="button" className="st-del" onClick={() => handleDeleteUser(u.username)}><Trash2 size={14} /> Hapus</button>
+                              : <span className="st-main-tag">Akun utama</span>}
+                          </div>
                         ))}
-                      </tbody>
-                    </table>
+                        {!usersList.length && <div className="st-empty">Belum ada akun.</div>}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {user.role === 'Admin' && (
-                <div style={{ marginTop: '2.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.5rem' }}>
-                    <ShieldAlert size={18} color="#dc2626"/>
-                    <h3 style={{ margin: 0 }}>Log Riwayat Yang Dihapus</h3>
+                {tab === 'log' && isAdmin && (
+                  <div className="st-card">
+                    <div className="st-card-head">
+                      <span className="st-ico red"><ShieldAlert size={20} /></span>
+                      <div><h3>Log riwayat yang dihapus</h3><p>Catatan siapa yang menghapus transaksi dan kapan.</p></div>
+                    </div>
+                    <div className="st-list">
+                      {clearLogs.map(log => (
+                        <div className="st-li" key={log.id}>
+                          <div className="st-av">{String(log.who || '?')[0].toUpperCase()}</div>
+                          <div className="st-li-main">
+                            <b>{log.who} <span className={'st-badge ' + (log.role === 'Admin' ? 'admin' : '')} style={{ marginLeft: 4 }}>{log.role}</span></b>
+                            <small>{log.time}</small>
+                          </div>
+                          <span className="st-log-n">{log.count} transaksi</span>
+                        </div>
+                      ))}
+                      {!clearLogs.length && <div className="st-empty">Belum ada riwayat yang dihapus.</div>}
+                    </div>
                   </div>
-                  <p className="muted" style={{ marginBottom: '1rem' }}>Catatan aktivitas akun yang melakukan pembersihan/penghapusan riwayat transaksi.</p>
+                )}
 
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Waktu Hapus</th>
-                          <th>Pelaku (User)</th>
-                          <th>Peran</th>
-                          <th>Jumlah Data</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {clearLogs.map(log => (
-                          <tr key={log.id}>
-                            <td><span className="mono">{log.time}</span></td>
-                            <td><b>{log.who}</b></td>
-                            <td><span className="cat-badge">{log.role}</span></td>
-                            <td><b style={{ color: '#dc2626' }}>{log.count} transaksi</b></td>
-                          </tr>
-                        ))}
-                        {!clearLogs.length && (
-                          <tr>
-                            <td colSpan="4" className="empty-table" style={{ textAlign: 'center', padding: '1.5rem', color: '#64748b' }}>
-                              Belum ada catatan penghapusan riwayat.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+                {tab === 'profil' && (
+                  <div className="st-card">
+                    <div className="st-me">
+                      <div className="st-av">{user.username[0].toUpperCase()}</div>
+                      <div><b>{user.username}</b><small>Masuk sebagai {user.role}</small></div>
+                    </div>
+                    <button type="button" className="st-btn danger st-out" onClick={logoutNow}><LogOut size={16} /> Keluar dari aplikasi</button>
                   </div>
-                </div>
-              )}
-
-              <h3 style={{marginTop: '2.5rem'}}>Akun & Sistem</h3>
-              <div className="account-info">
-                <div className="avatar large">{user.username[0].toUpperCase()}</div>
-                <div>
-                  <b>{user.username}</b>
-                  <p className="muted">Login sebagai {user.role}</p>
-                </div>
+                )}
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </main>
 
-      {/* MODAL DETAIL PESANAN */}
-      {selectedOrder && (
-        <div className="modal-backdrop" onClick={() => setSelectedOrder(null)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '440px', background: '#fff', borderRadius: '16px', padding: '24px', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', position: 'relative', display: 'flex', flexDirection: 'column', maxHeight: '85vh' }}>
-            <button className="modal-close" onClick={() => setSelectedOrder(null)} style={{ position: 'absolute', top: '20px', right: '20px', background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><X size={18} /></button>
+      {/* navigasi bawah (mobile) */}
+      <nav className="bn">
+        {['Pesanan', 'Denah', 'Antrian', 'Riwayat'].map(l => {
+          const it = visibleNavItems.find(n => n[1] === l);
+          if (!it) return null;
+          const Icon = it[0];
+          return (
+            <button key={l} type="button" className={page === l ? 'on' : ''} onClick={() => handlePageChange(l)}>
+              <Icon size={20} />{l}
+              {l === 'Antrian' && siapCount > 0 && <i>{siapCount}</i>}
+              {l === 'Pesanan' && cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
+            </button>
+          );
+        })}
+        <button type="button" onClick={() => setSidebarOpen(true)}><MenuIcon size={20} />Lainnya</button>
+      </nav>
 
-            <p className="eyebrow" style={{ fontSize: '0.75rem', fontWeight: 700, color: '#2563eb', letterSpacing: '0.05em', marginBottom: '4px' }}>DETAIL PESANAN</p>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-              <h2 style={{ fontSize: '1.4rem', fontWeight: 700, margin: 0 }}>{selectedOrder.id}</h2>
-              <div style={{ display: 'flex', gap: '4px' }}>
-                <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: 700, background: selectedOrder.kitchen_printed ? '#dcfce7' : '#fef9c3', color: selectedOrder.kitchen_printed ? '#166534' : '#854d0e' }}>
-                  {selectedOrder.kitchen_printed ? '✓ Dapur' : '⚡ Dapur (Belum)'}
-                </span>
-                <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: 700, background: selectedOrder.customer_printed ? '#dcfce7' : '#fef9c3', color: selectedOrder.customer_printed ? '#166534' : '#854d0e' }}>
-                  {selectedOrder.customer_printed ? '✓ Kasir' : '⚡ Kasir (Belum)'}
-                </span>
+      {/* ================= SHEET: DETAIL BON ================= */}
+      {selectedOrder && user.role !== 'Dapur' && (() => {
+        const o = selectedOrder;
+        const remain = remainOf(o), settled = settledOf(o), st = statusOf(o);
+        const qtyTotal = o.items.reduce((sum, x) => sum + x.qty, 0);
+        const isAdmin = user.role === 'Admin';
+        return (
+          <div className="dt-overlay" onClick={() => setSelectedOrder(null)}>
+            <div className="dt-sheet" onClick={e => e.stopPropagation()}>
+              <div className="dt-handle"></div>
+              <div className="dt-head">
+                <div className="dt-meja"><small>MEJA</small><b>{o.location}</b></div>
+                <div className="dt-title"><h2>{o.id}</h2><p>{o.date} · {o.time}</p></div>
+                <button className="dt-close" onClick={() => setSelectedOrder(null)} aria-label="Tutup"><X size={18} /></button>
               </div>
-            </div>
-            <p className="muted" style={{ fontSize: '0.85rem', margin: '0 0 16px 0' }}>{selectedOrder.date} · {selectedOrder.time} · Kasir: <b>{selectedOrder.cashier}</b></p>
 
-            <div style={{ background: '#f8fafc', padding: '14px', borderRadius: '12px', marginBottom: '16px', border: '1px solid #e2e8f0', fontSize: '0.9rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ color: '#64748b' }}>Pelanggan:</span>
-                <b>{selectedOrder.customer || 'Umum'}</b>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center' }}>
-                <span style={{ color: '#64748b' }}>Lokasi Meja:</span>
-                <span className="cat-badge" style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: '6px', fontWeight: 600, fontSize: '0.8rem' }}>{selectedOrder.location}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#64748b' }}>Metode Bayar:</span>
-                <b>{selectedOrder.payment}</b>
-              </div>
-            </div>
-
-            <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>Daftar Item</span>
-              <button
-                className="text-btn"
-                style={{ fontSize: '0.8rem', color: '#2563eb', display: 'flex', alignItems: 'center', gap: '3px' }}
-                onClick={() => startAddToOrder(selectedOrder)}
-              >
-                <Plus size={14} /> Tambah Item ke Bon Ini
-              </button>
-            </div>
-
-            <div style={{ overflowY: 'auto', flex: 1, border: '1px solid #e2e8f0', borderRadius: '12px', padding: '10px', marginBottom: '16px', background: '#fff' }}>
-              {selectedOrder.items.map((it, idx) => (
-                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 4px', borderBottom: idx < selectedOrder.items.length - 1 ? '1px solid #f1f5f9' : 'none' }}>
-                  <div>
-                    <b style={{ fontSize: '0.9rem', display: 'block', color: '#1e293b' }}>{it.name}</b>
-                    <small style={{ color: '#64748b' }}>{it.qty} x {money(it.price)}</small>
-                  </div>
-                  <strong style={{ fontSize: '0.95rem', color: '#0f172a' }}>{money(it.qty * it.price)}</strong>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <span style={{ fontWeight: 600, color: '#475569' }}>Total Tagihan</span>
-              <strong style={{ fontSize: '1.25rem', color: '#2563eb' }}>{money(selectedOrder.total)}</strong>
-            </div>
-
-            {remainOf(selectedOrder) > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: '10px', padding: '10px 12px', marginBottom: '12px' }}>
+              <div className="dt-body">
                 <div>
-                  <small style={{ color: '#991b1b', display: 'block' }}>Sisa belum dibayar</small>
-                  <b style={{ color: '#991b1b', fontSize: '1.05rem' }}>{money(remainOf(selectedOrder))}</b>
+                  <div className="dt-chips">
+                    {remain > 0
+                      ? <span className="dt-chip" style={{ background: '#fee2e2', color: '#991b1b' }}>Belum lunas</span>
+                      : <span className="dt-chip" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}
+                    <span className="dt-chip" style={{ background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span>
+                    <span className="dt-chip" style={{ background: o.kitchen_printed ? '#dcfce7' : '#fef9c3', color: o.kitchen_printed ? '#166534' : '#854d0e' }}>{o.kitchen_printed ? '✓ Dapur tercetak' : 'Dapur belum dicetak'}</span>
+                    <span className="dt-chip" style={{ background: o.customer_printed ? '#dcfce7' : '#fef9c3', color: o.customer_printed ? '#166534' : '#854d0e' }}>{o.customer_printed ? '✓ Struk tercetak' : 'Struk belum dicetak'}</span>
+                  </div>
+                  <div className="dt-info">
+                    <div><span>Pelanggan</span><b>{o.customer || 'Umum'}</b></div>
+                    <div><span>Kasir</span><b>{o.cashier}</b></div>
+                    <div><span>Metode bayar</span><b>{o.payment}</b></div>
+                    <div><span>Jumlah item</span><b>{qtyTotal} porsi</b></div>
+                  </div>
+                  <div className="dt-sec"><span>Daftar item</span><small>{o.items.length} jenis</small></div>
+                  <div>
+                    {o.items.map((it, idx) => (
+                      <div className="dt-item" key={idx}>
+                        <div className="dt-qty">{it.qty}×</div>
+                        <div>
+                          <b>{it.name}</b>
+                          <small>{money(it.price)} / porsi</small>
+                          {it.note && <small style={{ color: '#b45309', fontWeight: 600 }}>Catatan: {it.note}</small>}
+                        </div>
+                        <strong>{money(it.qty * it.price)}</strong>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <button className="primary" style={{ padding: '8px 14px', borderRadius: '8px', fontWeight: 600 }} onClick={() => openSettle(selectedOrder)}>Bayar Sisa</button>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignSelf: 'start' }}>
+                  <div className="dt-sum">
+                    <div className="dt-sec" style={{ margin: '0 0 8px' }}><span>Status pesanan</span></div>
+                    <div className="dt-st">
+                      {STATUSES.map(s => <button key={s} type="button" className={st === s ? 'on' : ''} onClick={() => setStatus(o, s)}>{s}</button>)}
+                    </div>
+                  </div>
+                  {o.notes && <div className="dt-note"><span>Catatan</span>{o.notes}</div>}
+                  <div className="dt-sum">
+                    {((o.discount || 0) > 0 || (o.rounding || 0) > 0) && (
+                      <>
+                        <div className="dt-row"><span>Subtotal</span><b>{money(sumItems(o.items))}</b></div>
+                        {o.discount > 0 && <div className="dt-row"><span>Diskon</span><b>−{money(o.discount)}</b></div>}
+                        {o.rounding > 0 && <div className="dt-row"><span>Pembulatan</span><b>+{money(o.rounding)}</b></div>}
+                      </>
+                    )}
+                    <div className="dt-total"><span>Total tagihan</span><strong>{money(o.total)}</strong></div>
+                    {o.payment !== 'Belum Bayar' && <div className="dt-row"><span>Sudah dibayar</span><b>{money(settled)}</b></div>}
+                    {o.payment !== 'Belum Bayar' && (o.change || 0) > 0 && <div className="dt-row"><span>Kembalian</span><b>{money(o.change)}</b></div>}
+                    {remain > 0 && <div className="dt-row due"><span>Sisa belum dibayar</span><b>{money(remain)}</b></div>}
+                  </div>
+                </div>
               </div>
-            )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <button
-                className="primary"
-                style={{ width: '100%', padding: '12px', borderRadius: '10px', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: (selectedOrder.kitchen_printed && selectedOrder.customer_printed) ? '#64748b' : '#16a34a' }}
-                onClick={() => printAll(selectedOrder)}
-              >
-                <Printer size={18} /> {(selectedOrder.kitchen_printed && selectedOrder.customer_printed) ? 'Cetak Ulang Keduanya' : 'Cetak Sisa yang Belum (Dapur & Kasir)'}
-              </button>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="secondary" style={{ flex: 1, padding: '8px', borderRadius: '8px', fontSize: '0.85rem' }} onClick={() => printOrder(selectedOrder, 'kitchen')}>
-                  {selectedOrder.kitchen_printed ? 'Cetak Ulang Dapur' : 'Cetak Dapur Saja'}
-                </button>
-                <button className="secondary" style={{ flex: 1, padding: '8px', borderRadius: '8px', fontSize: '0.85rem' }} onClick={() => printOrder(selectedOrder, 'customer')}>
-                  {selectedOrder.customer_printed ? 'Cetak Ulang Kasir' : 'Cetak Kasir Saja'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {selectedItemForVariant && (
-        <div className="modal-backdrop">
-          <div className="modal" style={{ maxWidth: '360px', textAlign: 'center' }}>
-            <p className="eyebrow">PILIH VARIAN</p>
-            <h2>{selectedItemForVariant.name}</h2>
-            <p className="muted">Apakah minuman ini menggunakan susu tambahan?</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', margin: '1.5rem 0' }}>
-              <button
-                className="secondary"
-                onClick={() => addToCartDirect(selectedItemForVariant, false)}
-                style={{ padding: '0.75rem', fontWeight: 600 }}
-              >
-                Normal ({money(selectedItemForVariant.price)})
-              </button>
-              <button
-                className="primary"
-                onClick={() => addToCartDirect(selectedItemForVariant, true)}
-                style={{ padding: '0.75rem', fontWeight: 600 }}
-              >
-                Pakai Susu (+{money(3000)}) → {money(selectedItemForVariant.price + 3000)}
-              </button>
-            </div>
-            <button className="text-btn" onClick={() => setSelectedItemForVariant(null)}>Batal</button>
-          </div>
-        </div>
-      )}
-
-      {showPay && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <button className="modal-close" onClick={closePay}><X /></button>
-            <p className="eyebrow">CHECKOUT</p>
-            <h2>{settling ? 'Pelunasan' : addingToOrder ? 'Pembayaran Tambahan' : 'Pembayaran'}</h2>
-            <div className="pay-total">
-              <span>{settling ? 'Sisa tagihan' : addingToOrder ? 'Total tambahan' : 'Total tagihan'}</span>
-              <b>{money(payDue)}</b>
-            </div>
-            <label className="modal-label">Pilih Metode</label>
-            <div className="payment-options">
-              {['Tunai', 'QRIS', 'Transfer', 'Belum Bayar'].map(m => (
-                (settling && m === 'Belum Bayar') ? null : <button key={m} className={payment === m ? 'chosen' : ''} onClick={() => setPayment(m)}>{m}</button>
-              ))}
-            </div>
-            {payment === 'Tunai' && (
-              <>
-                <label className="modal-label">Uang diterima</label>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    className="pay-input"
-                    autoFocus
-                    style={{ flex: 1, minWidth: 0 }}
-                    value={paidRaw}
-                    onChange={e => {
-                      const d = e.target.value.replace(/\D/g, '').slice(0, 6);
-                      setPaidRaw(d);
-                      setPaid(d ? String(Number(d) * 1000) : '');
-                    }}
-                    placeholder="Ketik 10 = Rp10.000"
-                  />
-                  <button
-                    type="button"
-                    className={Number(paid) === payDue ? 'primary' : 'secondary'}
-                    style={{ padding: '0 14px', borderRadius: '8px', fontWeight: 600, whiteSpace: 'nowrap' }}
-                    onClick={() => { setPaid(String(payDue)); setPaidRaw(''); }}
-                  >
-                    Uang Pas
+              <div className="dt-foot">
+                <div className="dt-main">
+                  {remain > 0 && <button className="dt-btn pay" onClick={() => openSettle(o)}><Wallet size={18} /> Bayar Sisa · {money(remain)}</button>}
+                  <button className={'dt-btn print ' + (o.kitchen_printed ? 'done' : '')} disabled={printing} onClick={() => printOrder(o, 'kitchen')}>
+                    <Printer size={18} /> {printing ? 'Mencetak...' : o.kitchen_printed ? 'Cetak Ulang Tiket Dapur' : 'Cetak Tiket Dapur'}
                   </button>
                 </div>
-                {Number(paid) > 0 && (
-                  <small className="muted" style={{ display: 'block', marginTop: '6px' }}>Diterima: <b>{money(paid)}</b></small>
-                )}
-                <div className="change-line">
-                  <span>Kembalian</span>
-                  <b>{money(Math.max(0, Number(paid || 0) - payDue))}</b>
+                <div className="dt-tiles">
+                  <button className="dt-tile" disabled={printing} onClick={() => printOrder(o, 'kitchen')}><i style={{ background: o.kitchen_printed ? '#16a34a' : '#eab308' }}></i><Printer size={18} /> Dapur</button>
+                  <button className="dt-tile" disabled={printing} onClick={() => printOrder(o, 'customer')}><i style={{ background: o.customer_printed ? '#16a34a' : '#eab308' }}></i><Printer size={18} /> Struk Kasir (Manual)</button>
+                  <button className="dt-tile" onClick={() => startAddToOrder(o)}><Plus size={18} /> Tambah</button>
+                  <button className="dt-tile" onClick={() => openMove(o)}><ArrowRightLeft size={18} /> Pindah</button>
+                  <button className="dt-tile" disabled={o.items.length < 1 || (o.items.length === 1 && o.items[0].qty < 2)} onClick={() => openSplit(o)}><Scissors size={18} /> Pisah</button>
+                  <button className="dt-tile" onClick={() => reorder(o)}><RotateCcw size={18} /> Pesan lagi</button>
+                  {isAdmin && <button className="dt-tile del" onClick={() => deleteOrder(o)}><Trash2 size={18} /> Hapus</button>}
                 </div>
-              </>
-            )}
-            {payment === 'Belum Bayar' && (
-              <div className="notice-box" style={{ marginBottom: '1.5rem', padding: '0.75rem', background: '#fef3c7', borderRadius: '8px', fontSize: '0.85rem', color: '#92400e' }}>
-                <b>Catatan:</b> Pesanan akan dicatat dengan status <b>Belum Lunas</b> (Bon).
               </div>
-            )}
-            <button className="primary full large" onClick={settling ? confirmSettle : addingToOrder ? confirmAdditionPayment : finish}>{settling ? 'Lunasi Tagihan' : addingToOrder ? 'Simpan Tambahan' : 'Selesaikan Transaksi'}</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ================= SHEET: SEBUAH MEJA (DENAH) ================= */}
+      {tableSheet && (() => {
+        const list = (tableInfo[tableSheet.key] || []).slice().sort((a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0));
+        return (
+          <div className="po-ov" onClick={() => setTableSheet(null)}>
+            <div className="po-sheet" onClick={e => e.stopPropagation()}>
+              <div className="po-handle"></div>
+              <div className="po-cart-head">
+                <div><h3>{tableSheet.label}</h3><p>{list.length ? `${list.length} bon hari ini` : 'Belum ada pesanan hari ini'}</p></div>
+                <button type="button" className="po-x" onClick={() => setTableSheet(null)} aria-label="Tutup"><X size={18} /></button>
+              </div>
+              <div className="po-sheet-body">
+                {list.map(o => {
+                  const st = statusOf(o);
+                  return (
+                    <div className="mv-card" key={o.id}>
+                      <div>
+                        <b>{o.id} · {o.customer || 'Umum'}</b>
+                        <small>{o.time} · {o.items.reduce((s, x) => s + x.qty, 0)} item · {money(o.total)}</small>
+                        <span className="tag" style={{ background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span>
+                        {remainOf(o) > 0 ? <span className="tag" style={{ background: '#fee2e2', color: '#991b1b' }}>Sisa {money(remainOf(o))}</span> : <span className="tag" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}
+                      </div>
+                      <div className="mv-btns">
+                        <button type="button" className="mv-btn" onClick={() => { setTableSheet(null); setSelectedOrder(o); }}>Buka</button>
+                        <button type="button" className="mv-btn alt" onClick={() => startAddToOrder(o)}>Tambah</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="po-cart-foot">
+                <button type="button" className="po-go" onClick={() => startNewAt(tableSheet.loc)}>Pesanan baru di {tableSheet.label}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ================= SHEET: STOK / HABIS ================= */}
+      {stockItem && (
+        <div className="po-ov" onClick={() => setStockItem(null)}>
+          <div className="po-sheet" onClick={e => e.stopPropagation()}>
+            <div className="po-handle"></div>
+            <div className="po-cart-head">
+              <div><h3>{stockItem.name}</h3><p>{stockItem.sold_out ? 'Sedang ditandai habis' : stockItem.stock != null ? `Stok harian tersisa ${stockItem.stock}` : 'Tersedia, stok tidak dibatasi'}</p></div>
+              <button type="button" className="po-x" onClick={() => setStockItem(null)} aria-label="Tutup"><X size={18} /></button>
+            </div>
+            <div className="po-sheet-body">
+              <button type="button" className="po-go" style={{ width: '100%', background: stockItem.sold_out ? '#16a34a' : '#dc2626' }}
+                onClick={() => saveStock(stockItem, stockItem.sold_out ? { sold_out: false, ...(stockItem.stock === 0 ? { stock: null } : {}) } : { sold_out: true })}>
+                {stockItem.sold_out ? 'Tersedia lagi' : 'Tandai habis'}
+              </button>
+              <span className="po-lbl">Stok harian <em>kosongkan = tidak dibatasi</em></span>
+              <input className="po-in" inputMode="numeric" value={stockDraft} onChange={e => setStockDraft(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="Contoh: 20" />
+              <p style={{ margin: '8px 0 0', fontSize: '.78rem', color: '#64748b' }}>Stok berkurang otomatis setiap ada pesanan dan menu menjadi habis saat mencapai 0.</p>
+            </div>
+            <div className="po-cart-foot">
+              <button type="button" className="po-go alt" onClick={() => { const n = stockDraft === '' ? null : Number(stockDraft); saveStock(stockItem, { stock: n, sold_out: n === 0 }); }}>Simpan stok</button>
+            </div>
           </div>
         </div>
       )}
 
-      {notice && (
-        <div className="toast">
-          <CheckCircle2 size={18} />
-          <span>{notice}</span>
+      {/* ================= SHEET: PINDAH / GABUNG ================= */}
+      {moveOrder && (() => {
+        const o = moveOrder;
+        const dest = moveTarget.trim();
+        const tables = Array.from({ length: 40 }, (_, i) => String(i + 1).padStart(2, '0'));
+        const others = orders.filter(x => x.id !== o.id && x.date === today);
+        const busyTables = new Set(others.filter(x => remainOf(x) > 0).map(x => normLoc(x.location)));
+        const candidates = dest ? others.filter(x => normLoc(x.location) === normLoc(dest)) : [];
+        const isSame = !!dest && normLoc(dest) === normLoc(o.location);
+        const isTablePick = /^\d{2}$/.test(dest) && Number(dest) >= 1 && Number(dest) <= 40;
+        return (
+          <div className="mv-overlay">
+            <div className="mv-sheet">
+              <div className="mv-handle"></div>
+              <div className="mv-head">
+                <div><h2>Pindah / Gabung Meja</h2><p>{o.id} · Meja {o.location} · {o.customer || 'Umum'} · {money(o.total)}</p></div>
+                <button className="mv-close" onClick={closeMove} aria-label="Tutup"><X size={18} /></button>
+              </div>
+              <div className="mv-body">
+                <span className="mv-label" style={{ marginTop: 0 }}>Pindah ke meja</span>
+                <div className="mv-grid">
+                  {tables.map(n => {
+                    const cur = normLoc(o.location) === n;
+                    return (
+                      <button key={n} type="button" disabled={cur} className={'mv-table ' + (cur ? 'cur ' : '') + (dest === n ? 'on' : '')} onClick={() => setMoveTarget(n)}>
+                        {n}{busyTables.has(n) && <i></i>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mv-legend"><i></i> Ada bon yang belum lunas</div>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                  {['Bawa pulang', 'Meja belakang'].map(q => (
+                    <button key={q} type="button" onClick={() => setMoveTarget(q)}
+                      style={{ height: '40px', padding: '0 14px', borderRadius: '99px', border: `1.5px solid ${moveTarget === q ? '#2563eb' : '#e2e8f0'}`, background: moveTarget === q ? '#eff6ff' : '#fff', color: moveTarget === q ? '#1d4ed8' : '#475569', fontWeight: 600, fontSize: '.85rem', cursor: 'pointer' }}>{q}</button>
+                  ))}
+                </div>
+                <input className="mv-input" value={isTablePick ? '' : moveTarget} onChange={e => setMoveTarget(e.target.value)} placeholder="Atau ketik manual (misal: Bawa pulang)" />
+                {isSame && <p className="mv-hint">Pesanan ini sudah berada di meja {o.location}.</p>}
+                {dest && !isSame && candidates.length > 0 && (
+                  <>
+                    <span className="mv-label">Meja {dest} sudah punya {candidates.length} bon hari ini. Gabungkan?</span>
+                    {candidates.map(c => (
+                      <div className="mv-card" key={c.id}>
+                        <div>
+                          <b>{c.id} · {c.customer || 'Umum'}</b>
+                          <small>{c.time} · {c.items.reduce((sum, x) => sum + x.qty, 0)} item · {money(c.total)}</small>
+                          {remainOf(c) > 0 ? <span className="tag" style={{ background: '#fee2e2', color: '#991b1b' }}>Sisa {money(remainOf(c))}</span> : <span className="tag" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}
+                        </div>
+                        <button className="mv-btn" disabled={moveBusy} onClick={() => doMerge(o, c)}>Gabung ke sini</button>
+                      </div>
+                    ))}
+                  </>
+                )}
+                {dest && !isSame && (
+                  <button className={'mv-move ' + (candidates.length > 0 ? 'alt' : '')} disabled={moveBusy} onClick={() => doMove(o, dest)}>
+                    {candidates.length > 0 ? `Pindah saja ke meja ${dest} (bon terpisah)` : `Pindahkan ke meja ${dest}`}
+                  </button>
+                )}
+                {!dest && <p className="mv-hint">Pilih meja tujuan. Kalau meja itu sudah punya bon hari ini, kamu bisa menggabungkannya.</p>}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ================= SHEET: PISAH BON ================= */}
+      {splitOrder && (() => {
+        const o = orders.find(x => x.id === splitOrder.id) || splitOrder;
+        const movedItems = o.items.map((it, i) => ({ ...it, qty: Math.min(splitQty[i] || 0, it.qty) })).filter(it => it.qty > 0);
+        const movedTotal = sumItems(movedItems);
+        return (
+          <div className="mv-overlay">
+            <div className="mv-sheet">
+              <div className="mv-handle"></div>
+              <div className="mv-head">
+                <div><h2>Pisah Bon</h2><p>{o.id} · Meja {o.location} · {money(o.total)}</p></div>
+                <button className="mv-close" onClick={() => !moveBusy && setSplitOrder(null)} aria-label="Tutup"><X size={18} /></button>
+              </div>
+              <div className="mv-body">
+                <span className="mv-label" style={{ marginTop: 0 }}>Pilih porsi yang dipindah ke bon baru</span>
+                {o.items.map((it, i) => (
+                  <div className="sp-row" key={i}>
+                    <div><b>{it.name}</b><small>{it.qty} porsi · {money(it.price)}</small></div>
+                    <div className="po-step">
+                      <button type="button" onClick={() => setSplitQty(q => ({ ...q, [i]: Math.max(0, (q[i] || 0) - 1) }))}><Minus size={16} /></button>
+                      <b>{splitQty[i] || 0}</b>
+                      <button type="button" onClick={() => setSplitQty(q => ({ ...q, [i]: Math.min(it.qty, (q[i] || 0) + 1) }))}><Plus size={16} /></button>
+                    </div>
+                  </div>
+                ))}
+                <span className="mv-label">Meja untuk bon baru</span>
+                <input className="mv-input" style={{ marginTop: 0 }} value={splitLoc} onChange={e => setSplitLoc(e.target.value)} placeholder="Meja / lokasi" />
+                {((o.discount || 0) > 0 || (o.rounding || 0) > 0) && <p className="mv-hint">Diskon dan pembulatan tetap di bon asal.</p>}
+                <p className="mv-hint">Bon baru: <b>{money(movedTotal)}</b>{movedItems.length ? ` (${movedItems.reduce((s, x) => s + x.qty, 0)} porsi)` : ''}. Pembayaran yang sudah masuk tetap dihitung ke bon asal dulu.</p>
+                <button className="mv-move" disabled={moveBusy || !movedItems.length} onClick={doSplit}>Pisahkan jadi bon baru</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ================= MODAL VARIAN / BAKSO ================= */}
+      {selectedItemForVariant && (
+        <div className="modal-backdrop">
+          <div className="modal" style={{ maxWidth: '380px', textAlign: 'center' }}>
+            <p className="eyebrow">PILIH VARIAN</p>
+            <h2>{selectedItemForVariant.name}</h2>
+            <p className="muted" style={{ margin: '4px 0 12px' }}>Suhu <em>Opsional</em></p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+              {[['Panas', Flame, '#ea580c', '#fff7ed'], ['Hangat', Coffee, '#d97706', '#fffbeb'], ['Dingin', Snowflake, '#0284c7', '#f0f9ff']].map(([t, Icon, color, bg]) => {
+                const on = variantTemp === t;
+                return (
+                  <button key={t} type="button" onClick={() => setVariantTemp(on ? '' : t)}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', padding: '14px 4px', borderRadius: '14px', border: `2px solid ${on ? color : '#e2e8f0'}`, background: on ? bg : '#fff', color: on ? color : '#64748b', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer' }}>
+                    <Icon size={24} />{t}
+                  </button>
+                );
+              })}
+            </div>
+            <button type="button" onClick={() => setVariantSusu(v => !v)}
+              style={{ width: '100%', marginTop: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: '12px', border: `2px solid ${variantSusu ? '#2563eb' : '#e2e8f0'}`, background: variantSusu ? '#eff6ff' : '#fff', color: variantSusu ? '#1d4ed8' : '#475569', fontWeight: 600, fontSize: '0.9rem', cursor: 'pointer' }}>
+              <span>Tambah susu <small style={{ fontWeight: 500 }}>(+{money(3000)})</small></span>
+              <span style={{ width: 22, height: 22, borderRadius: '6px', border: `2px solid ${variantSusu ? '#2563eb' : '#cbd5e1'}`, background: variantSusu ? '#2563eb' : 'transparent', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {variantSusu && <Check size={14} />}
+              </span>
+            </button>
+            <button className="primary full large" style={{ marginTop: '1.25rem' }} onClick={() => addToCartDirect(selectedItemForVariant, variantSusu, variantTemp)}>
+              Tambah · {money(selectedItemForVariant.price + (variantSusu ? 3000 : 0))}
+            </button>
+            <button className="text-btn" style={{ marginTop: '8px' }} onClick={() => setSelectedItemForVariant(null)}>Batal</button>
+          </div>
         </div>
       )}
+
+      {baksoOpen && (
+        <div className="modal-backdrop">
+          <div className="modal" style={{ maxWidth: '360px' }}>
+            <button className="modal-close" onClick={() => setBaksoOpen(false)}><X /></button>
+            <p className="eyebrow">HARGA CUSTOM</p>
+            <h2>Bakso</h2>
+            <label className="modal-label">Keterangan <em>Opsional</em></label>
+            <input className="pay-input" value={baksoName} onChange={e => setBaksoName(e.target.value)} placeholder="Contoh: Urat, Telur, Jumbo..." />
+            <label className="modal-label" style={{ marginTop: '12px' }}>Harga (Rp)</label>
+            <input type="text" inputMode="numeric" className="pay-input" autoFocus value={baksoPrice}
+              onChange={e => setBaksoPrice(e.target.value.replace(/\D/g, '').slice(0, 7))} onKeyDown={e => { if (e.key === 'Enter') addBakso(); }} placeholder="Contoh: 15000" />
+            {Number(baksoPrice) > 0 && <small className="muted" style={{ display: 'block', marginTop: '6px' }}>Harga: <b>{money(baksoPrice)}</b></small>}
+            <button className="primary full large" style={{ marginTop: '1.25rem' }} onClick={addBakso}>Tambah ke Keranjang</button>
+          </div>
+        </div>
+      )}
+
+      {/* ================= SHEET: PEMBAYARAN ================= */}
+      {showPay && (() => {
+        const rec = Number(paid || 0);
+        const diff = rec - payDue;
+        const quick = [20000, 50000, 100000];
+        const methods = ['Tunai', 'QRIS', 'Transfer', 'Belum Bayar'].filter(m => !(settling && m === 'Belum Bayar'));
+        const submit = settling ? confirmSettle : addingToOrder ? confirmAdditionPayment : finish;
+        const newOrder = !settling && !addingToOrder;
+        const partialCash = settling && payment === 'Tunai' && rec > 0 && diff < 0;
+        return (
+          <div className="pay2-overlay">
+            <div className="pay2-sheet">
+              <div className="pay2-handle"></div>
+              <div className="pay2-head">
+                <h2>{settling ? 'Pelunasan' : addingToOrder ? 'Pembayaran Tambahan' : 'Pembayaran'}</h2>
+                <button className="pay2-close" onClick={closePay} aria-label="Tutup"><X size={18} /></button>
+              </div>
+              <div className="pay2-body">
+                <div className="pay2-total">
+                  <span>{settling ? 'Sisa tagihan' : addingToOrder ? 'Total tambahan' : 'Total tagihan'}</span>
+                  <b>{money(payDue)}</b>
+                </div>
+                {newOrder && (discAmt > 0 || roundAmt > 0) && (
+                  <div className="pay2-brk">
+                    <div><span>Subtotal</span><span>{money(subtotal)}</span></div>
+                    {discAmt > 0 && <div><span>Diskon</span><span>−{money(discAmt)}</span></div>}
+                    {roundAmt > 0 && <div><span>Pembulatan</span><span>+{money(roundAmt)}</span></div>}
+                  </div>
+                )}
+
+                <span className="pay2-label" style={{ marginTop: 0 }}>Metode pembayaran</span>
+                <div className="pay2-methods">
+                  {methods.map(m => <button key={m} className={'pay2-method ' + (payment === m ? 'on' : '')} onClick={() => setPayment(m)}>{m}</button>)}
+                </div>
+
+                {payment === 'Tunai' && newOrder && (
+                  <>
+                    <span className="pay2-label">Pembulatan</span>
+                    <div className="pay2-chips" style={{ gridTemplateColumns: 'repeat(3,1fr)', marginTop: 0 }}>
+                      {[[0, 'Tanpa'], [500, 'Rp500'], [1000, 'Rp1.000']].map(([v, l]) => (
+                        <button key={v} type="button" className={'pay2-chip ' + (roundTo === v ? 'on' : '')} onClick={() => { setRoundTo(v); setPaid(''); }}>{l}</button>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {payment === 'Tunai' && (
+                  <>
+                    <span className="pay2-label">Uang diterima</span>
+                    <input type="text" inputMode="numeric" className="pay2-input" value={paidRaw}
+                      onChange={e => { const d = e.target.value.replace(/\D/g, '').slice(0, 6); setPaidRaw(d); setPaid(d ? String(Number(d) * 1000) : ''); }}
+                      placeholder="Ketik 10 = Rp10.000" />
+                    <div className="pay2-chips">
+                      <button type="button" className={'pay2-chip ' + (rec === payDue ? 'on' : '')} onClick={() => { setPaid(String(payDue)); setPaidRaw(''); }}>Uang Pas</button>
+                      {quick.map(n => (
+                        <button key={n} type="button" className={'pay2-chip ' + (rec === n ? 'on' : '')} onClick={() => { setPaid(String(n)); setPaidRaw(String(n / 1000)); }}>{n / 1000}rb</button>
+                      ))}
+                    </div>
+                    <div className={'pay2-result ' + (rec > 0 && diff < 0 ? (settling ? 'warn' : 'short') : '')}>
+                      <span>{rec > 0 && diff < 0 ? (settling ? 'Sisa setelah bayar' : 'Kurang') : 'Kembalian'}</span>
+                      <b>{money(rec > 0 && diff < 0 ? -diff : Math.max(0, diff))}</b>
+                    </div>
+                  </>
+                )}
+
+                {settling && payment !== 'Tunai' && payment !== 'Belum Bayar' && (
+                  <>
+                    <span className="pay2-label">Nominal dibayar <em style={{ fontStyle: 'normal', fontWeight: 500, color: '#94a3b8' }}>kosongkan = lunas</em></span>
+                    <input type="text" inputMode="numeric" className="pay2-input" value={partialAmt} onChange={e => setPartialAmt(e.target.value.replace(/\D/g, '').slice(0, 8))} placeholder={String(payDue)} />
+                    {Number(partialAmt) > 0 && Number(partialAmt) < payDue && (
+                      <div className="pay2-result warn"><span>Sisa setelah bayar</span><b>{money(payDue - Number(partialAmt))}</b></div>
+                    )}
+                  </>
+                )}
+
+                {payment === 'Belum Bayar' && <div className="pay2-note">Pesanan akan dicatat dengan status <b>Belum Lunas</b> (Bon).</div>}
+              </div>
+              <div className="pay2-foot">
+                <button className="pay2-submit" disabled={saving} onClick={submit}>
+                  {saving ? 'Menyimpan...' : settling ? (partialCash || (Number(partialAmt) > 0 && Number(partialAmt) < payDue) ? 'Bayar Sebagian' : 'Lunasi Tagihan') : addingToOrder ? 'Simpan Tambahan' : 'Selesaikan Transaksi'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {toastEl}
     </div>
   );
 }
@@ -1213,49 +2320,35 @@ function Stat({ icon, label, value }) {
   );
 }
 
-function OrdersTable({ orders, printOrder, onSelectOrder }) {
+function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>ID</th>
-            <th>Status Cetak</th>
-            <th>Pelanggan</th>
-            <th>Lokasi</th>
-            <th>Waktu</th>
-            <th>Total</th>
-            <th>Metode</th>
-            <th>Aksi / Cetak</th>
+            <th>ID</th><th>Status</th><th>Cetak</th><th>Pelanggan</th><th>Lokasi</th><th>Waktu</th><th>Total</th><th>Metode</th><th>Aksi / Cetak</th>
           </tr>
         </thead>
         <tbody>
           {orders.map(o => {
             const isFullyPrinted = o.kitchen_printed && o.customer_printed;
+            const st = statusOf(o);
             return (
               <tr key={o.id} style={{ cursor: 'pointer', background: isFullyPrinted ? 'transparent' : '#fefce8' }} onClick={() => onSelectOrder(o)}>
-                <td><b className="mono">{o.id}</b></td>
-                <td>
+                <td data-label="ID"><b className="mono">{o.id}</b>{o._queued && <span className="cat-badge" style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e' }}>Antre</span>}</td>
+                <td data-label="Status"><span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span></td>
+                <td data-label="Cetak">
                   <div style={{ display: 'flex', gap: '4px' }}>
-                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.kitchen_printed ? '#dcfce7' : '#fef08a', color: o.kitchen_printed ? '#166534' : '#854d0e' }}>
-                      {o.kitchen_printed ? 'Dap✓' : 'Dap!'}
-                    </span>
-                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.customer_printed ? '#dcfce7' : '#fef08a', color: o.customer_printed ? '#166534' : '#854d0e' }}>
-                      {o.customer_printed ? 'Kas✓' : 'Kas!'}
-                    </span>
+                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.kitchen_printed ? '#dcfce7' : '#fef08a', color: o.kitchen_printed ? '#166534' : '#854d0e' }}>{o.kitchen_printed ? 'Dap✓' : 'Dap!'}</span>
+                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.customer_printed ? '#dcfce7' : '#fef08a', color: o.customer_printed ? '#166534' : '#854d0e' }}>{o.customer_printed ? 'Kas✓' : 'Kas!'}</span>
                   </div>
                 </td>
-                <td>{o.customer || '-'}</td>
-                <td><span className="cat-badge">{o.location}</span></td>
-                <td>
-                  <div className="time-cell">
-                    <span>{o.date}</span>
-                    <small>{o.time}</small>
-                  </div>
-                </td>
-                <td><b>{money(o.total)}</b></td>
-                <td>
-                  <span className={remainOf(o) > 0 ? 'cat-badge' : ''} style={remainOf(o) > 0 ? {background: '#fee2e2', color: '#991b1b'} : {}}>
+                <td data-label="Pelanggan">{o.customer || '-'}</td>
+                <td data-label="Lokasi"><span className="cat-badge">{o.location}</span></td>
+                <td data-label="Waktu"><div className="time-cell"><span>{o.date}</span><small>{o.time}</small></div></td>
+                <td data-label="Total"><b>{money(o.total)}</b></td>
+                <td data-label="Metode">
+                  <span className={remainOf(o) > 0 ? 'cat-badge' : ''} style={remainOf(o) > 0 ? { background: '#fee2e2', color: '#991b1b' } : {}}>
                     {remainOf(o) > 0 ? (o.payment === 'Belum Bayar' ? 'Belum Bayar' : `${o.payment} · Sisa ${money(remainOf(o))}`) : o.payment}
                   </span>
                 </td>
@@ -1263,13 +2356,14 @@ function OrdersTable({ orders, printOrder, onSelectOrder }) {
                   <div className="print-actions">
                     <button className="print-btn" onClick={() => onSelectOrder(o)} title="Lihat Detail"><Eye size={14} /> Detail</button>
                     <button className="print-btn" onClick={() => printOrder(o, 'kitchen')}><Printer size={14} /> Dapur</button>
-                    <button className="print-btn" onClick={() => printOrder(o, 'customer')}><Printer size={14} /> Kasir</button>
+                    <button className="print-btn" onClick={() => printOrder(o, 'customer')}><Printer size={14} /> Struk Kasir</button>
+                    {onDelete && <button className="print-btn" title="Hapus transaksi" style={{ background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' }} onClick={() => onDelete(o)}><Trash2 size={14} /> Hapus</button>}
                   </div>
                 </td>
               </tr>
             );
           })}
-          {!orders.label && orders.length === 0 && <tr><td colSpan="8" className="empty-table" style={{textAlign: 'center', padding: '2rem'}}>Belum ada transaksi.</td></tr>}
+          {orders.length === 0 && <tr><td colSpan="9" className="empty-table" style={{ textAlign: 'center', padding: '2rem' }}>Belum ada transaksi.</td></tr>}
         </tbody>
       </table>
     </div>

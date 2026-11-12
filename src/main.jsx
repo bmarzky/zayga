@@ -705,6 +705,11 @@ export default function App() {
   const flushing = useRef(false);
 
   const [notifPerm, setNotifPerm] = useState(() => typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default');
+  // Pusat audio hanya aktif pada perangkat yang ditandai secara lokal (mis. laptop dapur).
+  const [centralAudioDevice, setCentralAudioDevice] = useState(() => read('z_central_audio_device', false));
+  const [centralAudioReady, setCentralAudioReady] = useState(false);
+  const kitchenAudioRef = useRef(null);
+  const seenKitchenAudioOrders = useRef(new Set());
 
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [addingToOrder, setAddingToOrder] = useState(null);
@@ -795,13 +800,54 @@ export default function App() {
   };
 
   const testNotification = () => {
-    beep(880, 0.2, 2); buzz(80);
     try {
       if ('Notification' in window && Notification.permission === 'granted') {
         new Notification('Tes notifikasi Zayga', { body: 'Jika ini muncul, notifikasi perangkat sudah siap.', tag: 'zayga-test' });
       }
     } catch {}
-    flash('Tes suara & notifikasi dijalankan.', 2500);
+    flash('Tes notifikasi visual dijalankan.', 2500);
+  };
+
+  // File audio diletakkan di folder public dengan nama kitchen-alarm.mp3.
+  // Hanya perangkat yang ditandai sebagai pusat audio yang boleh memutarnya.
+  const playCentralKitchenAlarm = () => {
+    if (!read('z_central_audio_device', false) || !kitchenAudioRef.current) return;
+    try {
+      const audio = kitchenAudioRef.current;
+      if (!audio) return;
+      audio.pause();
+      audio.currentTime = 0;
+      audio.play().catch(err => console.warn('Audio dapur tidak dapat diputar:', err));
+    } catch (err) {
+      console.warn('Gagal memutar alarm dapur:', err);
+    }
+  };
+
+  const activateCentralAudio = async () => {
+    try {
+      const audio = new Audio('/kitchen-alarm.mp3');
+      audio.preload = 'auto';
+      audio.volume = 1;
+      kitchenAudioRef.current = audio;
+      // Pemutaran dari klik pengguna membuka izin audio browser untuk sesi ini.
+      await audio.play();
+      setCentralAudioReady(true);
+      setCentralAudioDevice(true);
+      write('z_central_audio_device', true);
+      flash('Laptop berhasil diaktifkan sebagai pusat audio dapur.', 4500);
+    } catch (err) {
+      setCentralAudioReady(false);
+      flash('Audio belum bisa diputar. Pastikan file public/kitchen-alarm.mp3 tersedia dan klik aktivasi lagi.', 6500);
+      console.error(err);
+    }
+  };
+
+  const disableCentralAudio = () => {
+    setCentralAudioDevice(false);
+    setCentralAudioReady(false);
+    write('z_central_audio_device', false);
+    if (kitchenAudioRef.current) kitchenAudioRef.current.pause();
+    flash('Perangkat ini tidak lagi menjadi pusat audio.', 3000);
   };
 
   const flash = (msg, ms = 5000, action = null) => {
@@ -913,25 +959,21 @@ export default function App() {
           const exists = ordersRef.current.some(x => x.id === n.id);
           setOrders(o => o.some(x => x.id === n.id) ? o : [n, ...o]);
 
-          // Notifikasi pesanan baru hanya untuk Dapur & Admin (kasir tidak perlu bunyi untuk pesanan yang ia buat sendiri / pesanan baru)
+          // Alarm pesanan baru hanya diputar oleh satu perangkat yang ditandai sebagai pusat audio.
+          // Tidak memeriksa nama kasir agar pesanan dari laptop pusat sendiri juga tetap memicu alarm.
+          if (read('z_central_audio_device', false) && !seenKitchenAudioOrders.current.has(n.id)) {
+            seenKitchenAudioOrders.current.add(n.id);
+            playCentralKitchenAlarm();
+          }
+
+          // Notifikasi visual tetap boleh tampil pada perangkat lain; tidak ada suara lokal di HP kasir.
           if (!exists && n.cashier !== userRef.current?.username) {
-            if (userRef.current?.role === 'Dapur') {
-              kitchenChime();
-            } else {
-              beep(880, 0.2, 3);
-            }
-            buzz(100);
             const msgTitle = userRef.current?.role === 'Dapur' ? 'PESANAN BARU MASUK!' : `Pesanan baru ${locLabel(n.location)}`;
             const msgBody = `${locLabel(n.location)} · Oleh: ${n.cashier} · ${(n.items || []).length} item`;
             flash(msgTitle, 8000);
-
             try {
               if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification(msgTitle, {
-                  body: msgBody,
-                  tag: `zayga-new-${n.id}`,
-                  renotify: true
-                });
+                new Notification(msgTitle, { body: msgBody, tag: `zayga-new-${n.id}`, renotify: true });
               }
             } catch (e) {
               console.error('Gagal menampilkan push notification:', e);
@@ -1003,13 +1045,15 @@ export default function App() {
             const isKitchen = userRef.current?.role === 'Dapur';
             const isFrontStaff = !isKitchen;
 
-            // 1. Dapur: deteksi pesanan baru masuk
-            if (isKitchen) {
-              const freshOrders = data.filter(d => !prevMap.has(d.id));
-              if (freshOrders.length > 0) {
-                kitchenChime();
-                flash(`PESANAN BARU MASUK (${freshOrders.length})`, 6000);
-              }
+            // 1. Fallback ketika Realtime terputus: hanya laptop pusat yang memutar file alarm.
+            const freshOrders = data.filter(d => !prevMap.has(d.id));
+            if (read('z_central_audio_device', false) && freshOrders.length > 0) {
+              const unseen = freshOrders.filter(d => !seenKitchenAudioOrders.current.has(d.id));
+              unseen.forEach(d => seenKitchenAudioOrders.current.add(d.id));
+              if (unseen.length > 0) playCentralKitchenAlarm();
+            }
+            if (isKitchen && freshOrders.length > 0) {
+              flash(`PESANAN BARU MASUK (${freshOrders.length})`, 6000);
             }
 
             // 2. Kasir/Depan: deteksi pesanan atau item yang baru saja siap
@@ -2373,7 +2417,7 @@ export default function App() {
                         <Clock size={15} />
                         {kdsTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </div>
-                      <button type="button" className="kds-action-btn" onClick={kitchenChime} title="Uji bunyi bel pesanan baru">
+                      <button type="button" className="kds-action-btn" onClick={playCentralKitchenAlarm} title="Uji alarm pusat audio">
                         <Bell size={15} /> <span className="btn-text-desktop">Tes </span>Bel
                       </button>
                       {syncBtn}
@@ -2961,7 +3005,26 @@ export default function App() {
                         {notifPerm !== 'granted' && (
                           <button type="button" className="sx-btn amber" onClick={requestNotificationPermission}><Bell size={16} /> Aktifkan notifikasi</button>
                         )}
-                        <button type="button" className="sx-btn" onClick={testNotification}><Volume2 size={16} /> Tes suara</button>
+                        <button type="button" className="sx-btn" onClick={testNotification}><Bell size={16} /> Tes notifikasi perangkat</button>
+                      </div>
+                      <div className="sx-field" style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line, #e5e7eb)' }}>
+                        <div className="sx-head" style={{ marginBottom: 8 }}>
+                          <span className="sx-ico amber"><Volume2 size={20} /></span>
+                          <div><h3>Pusat audio dapur</h3><p>Hanya satu perangkat (disarankan laptop) yang memutar file alarm untuk semua pesanan baru dari seluruh kasir.</p></div>
+                        </div>
+                        <div className="sx-kv"><span>Peran perangkat ini</span><b><span className={'sx-pill ' + (centralAudioDevice ? 'ok' : 'wait')}>{centralAudioDevice ? 'Pusat audio' : 'Perangkat kasir biasa'}</span></b></div>
+                        <div className="sx-kv"><span>Status audio sesi ini</span><b><span className={'sx-pill ' + (centralAudioReady ? 'ok' : 'wait')}>{centralAudioReady ? 'Siap memutar' : 'Belum diaktifkan'}</span></b></div>
+                        <p className="sx-hint" style={{ marginTop: 8 }}>Letakkan file alarm di <b>public/kitchen-alarm.mp3</b>. Hubungkan Headphones 2-K12 ke laptop dan pilih sebagai output suara Windows.</p>
+                        <div className="sx-actions">
+                          {!centralAudioDevice ? (
+                            <button type="button" className="sx-btn amber" onClick={activateCentralAudio}><Volume2 size={16} /> Jadikan perangkat ini pusat audio & tes</button>
+                          ) : (
+                            <>
+                              <button type="button" className="sx-btn amber" onClick={activateCentralAudio}><Volume2 size={16} /> Aktifkan ulang & tes audio</button>
+                              <button type="button" className="sx-btn danger" onClick={disableCentralAudio}>Nonaktifkan pusat audio</button>
+                            </>
+                          )}
+                        </div>
                       </div>
                       {notifPerm === 'denied' && <p className="sx-hint" style={{ marginTop: 10 }}>Izin ditolak. Buka pengaturan situs di browser lalu ubah izin Notifikasi menjadi "Izinkan".</p>}
                     </div>

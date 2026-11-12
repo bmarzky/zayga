@@ -1,0 +1,107 @@
+/* responsive.css — impor PALING AKHIR setelah style.css dan pos.css */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin: 0; -webkit-text-size-adjust: 100%; overflow-x: hidden; }
+button, input, select, textarea { font: inherit; }
+button { touch-action: manipulation; }
+input, select, textarea { font-size: 16px; } /* cegah zoom otomatis di iOS */
+:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ---------- Lapisan (z-index) agar tombol tidak tertutup ---------- */
+.po-cart-wrap { z-index: 900; }
+.po-bar { z-index: 800; }
+.dt-overlay { z-index: 1040; }
+.po-ov, .mv-overlay, .modal-backdrop { z-index: 1050; }
+.pay2-overlay { z-index: 1060; }
+.toast { z-index: 1100 !important; }
+
+/* ---------- Sheet/modal: bottom-sheet di HP, dialog di layar besar ---------- */
+.po-sheet, .mv-sheet, .pay2-sheet, .dt-sheet {
+  max-height: 92dvh; display: flex; flex-direction: column;
+}
+.po-sheet-body, .mv-body, .pay2-body, .dt-body { overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; }
+.po-sheet, .mv-sheet, .pay2-sheet { width: 100%; max-width: 560px; margin-inline: auto; }
+.dt-sheet { width: 100%; max-width: 980px; margin-inline: auto; }
+
+@media (min-width: 640px) {
+  .po-ov, .mv-overlay, .pay2-overlay, .dt-overlay { align-items: center !important; justify-content: center; display: flex; padding: 24px; }
+  .po-sheet, .mv-sheet, .pay2-sheet, .dt-sheet { border-radius: 20px !important; margin: 0; }
+  .po-handle, .mv-handle, .pay2-handle, .dt-handle { display: none; }
+}
+
+/* ---------- MOBILE (< 768px) ---------- */
+@media (max-width: 767px) {
+  .main { padding-bottom: 76px; }          /* ruang untuk bottom-nav */
+  .content { padding: 12px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .st-grid { grid-template-columns: 1fr !important; }
+  .dt-body { grid-template-columns: 1fr !important; }
+  .dt-tiles { grid-template-columns: repeat(3, 1fr); }
+  .qq-grid { grid-template-columns: 1fr !important; }
+  .tb-grid { grid-template-columns: repeat(4, 1fr); }
+  .bn { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 700;
+        padding-bottom: env(safe-area-inset-bottom); background: #fff; border-top: 1px solid #e2e8f0; }
+  .bn > button { flex: 1; min-height: 56px; position: relative; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 2px; font-size: .7rem; border: 0; background: none; color: #64748b; }
+  .bn > button.on { color: #2563eb; font-weight: 700; }
+  .bn i { position: absolute; top: 6px; left: 55%; min-width: 18px; height: 18px; border-radius: 9px;
+        background: #dc2626; color: #fff; font: 700 .65rem/18px system-ui; text-align: center; padding: 0 4px; }
+  .po-bar { position: fixed; left: 12px; right: 12px; bottom: calc(68px + env(safe-area-inset-bottom)); }
+  .po-cart-wrap:not(.open) { pointer-events: none; }
+  .po-cart-wrap.open { pointer-events: auto; }
+  .po-cart { max-height: 88dvh; }
+  .hide-mobile { display: none; }
+  /* tabel jadi kartu */
+  .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; width: 100%; }
+  .table-wrap thead { display: none; }
+  .table-wrap tr { border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 10px; padding: 8px 12px; background: #fff; }
+  .table-wrap td { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border: 0; }
+  .table-wrap td[data-label]::before { content: attr(data-label); color: #64748b; font-size: .78rem; }
+}
+
+/* ---------- TABLET (768–1099px) ---------- */
+@media (min-width: 768px) and (max-width: 1099px) {
+  .bn { display: none; }
+  .content { padding: 18px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .tb-grid { grid-template-columns: repeat(6, 1fr); }
+  .qq-grid { grid-template-columns: repeat(2, 1fr); }
+  .po-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; align-content: start; }
+  .po-hint, .po-empty { grid-column: 1 / -1; }
+}
+
+/* ---------- DESKTOP & TABLET LANDSCAPE (>= 900px): keranjang jadi panel samping ---------- */
+@media (min-width: 900px) {
+  .bn, .hamburger-btn, .mobile-close-btn, .po-bar, .po-x.mob, .po-backdrop, .po-handle { display: none !important; }
+  .po-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+  .po-menu { min-width: 0; }
+  .po-top { position: sticky; top: var(--po-top, 0); z-index: 5; background: inherit; }
+  .po-cart-wrap { position: sticky !important; top: calc(var(--po-top, 0px) + 12px); inset: auto; transform: none !important;
+        visibility: visible !important; opacity: 1 !important; pointer-events: auto !important; z-index: 1; height: auto; background: none; }
+  .po-cart { position: static !important; transform: none !important; width: 100%; max-height: calc(100dvh - var(--po-top, 0px) - 28px);
+        display: flex; flex-direction: column; border-radius: 16px; border: 1px solid #e2e8f0; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .po-cart-body { overflow-y: auto; flex: 1; }
+  .po-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; align-content: start; }
+  .po-hint, .po-empty { grid-column: 1 / -1; }
+}
+
+/* ---------- DESKTOP (>= 1100px) ---------- */
+@media (min-width: 1100px) {
+  .app-shell { display: grid; grid-template-columns: 250px minmax(0, 1fr); }
+  .sidebar { position: sticky; top: 0; height: 100dvh; transform: none !important; overflow-y: auto; }
+  .backdrop { display: none !important; }
+  .content { padding: 24px; max-width: 1500px; margin-inline: auto; }
+  .stats-grid { grid-template-columns: repeat(4, 1fr); }
+  .tb-grid { grid-template-columns: repeat(8, 1fr); }
+  .qq-grid { grid-template-columns: repeat(3, 1fr); }
+  .po-wrap { grid-template-columns: minmax(0, 1fr) 420px; }
+}
+
+/* Layar sangat lebar */
+@media (min-width: 1500px) { .qq-grid { grid-template-columns: repeat(4, 1fr); } }
+
+/* Tablet 900–1099: sidebar tetap laci geser, pastikan tombol menu terlihat */
+@media (min-width: 900px) and (max-width: 1099px) { .hamburger-btn { display: inline-flex !important; } }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

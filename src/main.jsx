@@ -1,44 +1,90 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio } from 'lucide-react';
 import { supabase } from './supabase';
-import './style.css';
-import './pos.css';
+import './app.css';
+// import './dash.css';
 
 /* ===================== Helper & konstanta ===================== */
 const money = n => 'Rp' + Number(n || 0).toLocaleString('id-ID');
+const moneyShort = n => {
+  n = Number(n || 0);
+  if (n >= 1e9) return 'Rp' + (n / 1e9).toFixed(1).replace('.', ',') + 'M';
+  if (n >= 1e6) return 'Rp' + (n / 1e6).toFixed(1).replace('.', ',') + 'jt';
+  if (n >= 1e3) return 'Rp' + Math.round(n / 1e3) + 'rb';
+  return 'Rp' + n;
+};
 const read = (k, f) => { try { return JSON.parse(localStorage.getItem(k)) ?? f } catch { return f } };
 const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} };
 
 const BAKSO_ID = 'bakso-custom';
 const NOTE_PRESETS = ['Tidak pedas', 'Pedas', 'Extra pedas', 'Tanpa sayur', 'Tanpa bawang', 'Dibungkus'];
 const STATUSES = ['Baru', 'Dimasak', 'Siap', 'Diantar'];
+const ITEM_STATUSES = ['Baru', 'Dimasak', 'Siap'];
 const STATUS_STYLE = { Baru: ['#fef9c3', '#854d0e'], Dimasak: ['#dbeafe', '#1d4ed8'], Siap: ['#dcfce7', '#166534'], Diantar: ['#f1f5f9', '#64748b'] };
-const statusOf = o => o.order_status || 'Diantar'; // pesanan lama (tanpa status) dianggap sudah selesai
+const statusOf = o => o?.order_status || 'Diantar';
 const NEXT_LABEL = { Baru: 'Mulai masak', Dimasak: 'Tandai siap', Siap: 'Sudah diantar' };
+const itemSt = i => i?.item_status || 'Baru';
+const deriveStatus = its => {
+  if (!Array.isArray(its) || !its.length) return 'Baru';
+  if (its.every(i => itemSt(i) === 'Diantar')) return 'Diantar';
+  if (its.every(i => ['Siap', 'Diantar'].includes(itemSt(i)))) return 'Siap';
+  if (its.some(i => ['Dimasak', 'Siap', 'Diantar'].includes(itemSt(i)))) return 'Dimasak';
+  return 'Baru';
+};
+const syncItems = (its, st) => (its || []).map(i => {
+  if (st === 'Diantar') return { ...i, item_status: 'Diantar' };
+  if (itemSt(i) === 'Diantar') return i;
+  return { ...i, item_status: st };
+});
 
 const normLoc = v => String(v ?? '').trim().toLowerCase();
 const locLabel = v => /^\d+$/.test(String(v).trim()) ? 'Meja ' + String(v).trim() : String(v).trim();
-const sumItems = a => (a || []).reduce((s, x) => s + x.price * x.qty, 0);
+const sumItems = a => (a || []).reduce((s, x) => s + (x.price || 0) * (x.qty || 0), 0);
 const calcTotal = (items, d = 0, r = 0) => Math.max(0, sumItems(items) - (d || 0) + (r || 0));
 const baseName = n => String(n || '').replace(/ \((Panas|Hangat|Dingin)\)/, '').replace(/ \+ Susu$/, '');
 const nowTime = () => new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 const ledger = (m, a, by) => ({ m, a, by, t: new Date().toISOString(), d: new Date().toLocaleDateString('en-CA') });
 const isNetErr = e => !navigator.onLine || /fetch|network|failed to|timeout|load failed/i.test(e?.message || '');
-const buzz = (ms = 15) => { try { navigator.vibrate && navigator.vibrate(ms) } catch {} };
+const buzz = (ms = 25) => { try { navigator.vibrate && navigator.vibrate(ms) } catch {} };
 
 let audioCtx;
-const beep = (freq = 880, dur = 0.16, times = 1) => {
+const beep = (freq = 880, dur = 0.2, times = 2) => {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
     for (let i = 0; i < times; i++) {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
       o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
-      const t = audioCtx.currentTime + i * (dur + 0.1);
-      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      const t = audioCtx.currentTime + i * (dur + 0.12);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       o.start(t); o.stop(t + dur + 0.02);
     }
   } catch {}
+};
+
+const kitchenChime = () => {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    // Nada ganda bel dapur (D5 -> A5)
+    [587.33, 880].forEach((freq, idx) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'triangle';
+      o.frequency.value = freq;
+      o.connect(g);
+      g.connect(audioCtx.destination);
+      const t = audioCtx.currentTime + idx * 0.22;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.45, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+      o.start(t);
+      o.stop(t + 0.38);
+    });
+  } catch (e) {
+    beep(880, 0.2, 2);
+  }
 };
 
 const newDraft = () => ({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), cart: [], customer: '', location: '', notes: '', discount: { type: 'rp', value: '' } });
@@ -48,29 +94,29 @@ const getLocalPrintBridge = () => read('z_local_print_url', 'http://localhost:91
 const receiptText = (text, align = 'left', bold = false, size = 'normal') => ({ type: 'text', text: String(text ?? ''), align, bold, size });
 const receiptDivider = () => ({ type: 'divider' });
 
-const settledOf = o => o.payment === 'Belum Bayar' ? 0 : Math.max(0, (o.paid || 0) - (o.change || 0));
-const remainOf = o => Math.max(0, (o.total || 0) - settledOf(o));
+const settledOf = o => o?.payment === 'Belum Bayar' ? 0 : Math.max(0, (o?.paid || 0) - (o?.change || 0));
+const remainOf = o => Math.max(0, (o?.total || 0) - settledOf(o));
 
 const buildReceipt = (o, type) => {
   const kitchen = type === 'kitchen';
-  const content = [receiptText('ZAYGA', 'center', true, 'large'), receiptText(o.isAddition ? 'MENU TAMBAHAN' : (kitchen ? 'TIKET PESANAN DAPUR' : 'STRUK PEMBAYARAN'), 'center', true), receiptDivider(), ...(o.isAddition ? [] : [receiptText(`No: ${o.id}`, 'left', true)]), receiptText(`Waktu: ${o.date} ${o.time}`), receiptText(`Kasir: ${o.cashier}`), receiptText(`Pelanggan: ${o.customer || '-'}`), receiptText(`Lokasi: ${o.location}`), receiptDivider()];
-  for (const item of o.items) {
+  const content = [receiptText('ZAYGA', 'center', true, 'large'), receiptText(o?.isAddition ? 'MENU TAMBAHAN' : (kitchen ? 'TIKET PESANAN DAPUR' : 'STRUK PEMBAYARAN'), 'center', true), receiptDivider(), ...(o?.isAddition ? [] : [receiptText(`No: ${o?.id}`, 'left', true)]), receiptText(`Waktu: ${o?.date} ${o?.time}`), receiptText(`Kasir: ${o?.cashier}`), receiptText(`Pelanggan: ${o?.customer || '-'}`), receiptText(`Lokasi: ${o?.location}`), receiptDivider()];
+  for (const item of (o?.items || [])) {
     if (kitchen) {
       content.push(receiptText(`${item.qty} x ${item.name}`, 'left', true));
-      if (item.note) content.push(receiptText(`   >> ${item.note}`, 'left', true));
+      if (item.note) content.push(receiptText(`    >> ${item.note}`, 'left', true));
     } else { content.push(receiptText(item.name)); content.push({ type: 'row', left: `${item.qty} x ${money(item.price)}`, right: money(item.qty * item.price) }); }
   }
   content.push(receiptDivider());
-  if (kitchen) { content.push(receiptText('CATATAN DAPUR', 'left', true)); content.push(receiptText(o.notes || '- Tidak ada catatan -')); content.push(receiptDivider()); content.push(receiptText('ERIC DAN AGIL :)', 'center', true)); }
+  if (kitchen) { content.push(receiptText('CATATAN DAPUR', 'left', true)); content.push(receiptText(o?.notes || '- Tidak ada catatan -')); content.push(receiptDivider()); content.push(receiptText('FITRI KAPAN NIKAH ?', 'center', true)); }
   else {
-    if ((o.discount || 0) > 0 || (o.rounding || 0) > 0) {
-      content.push({ type: 'row', left: 'Subtotal', right: money(sumItems(o.items)) });
-      if (o.discount > 0) content.push({ type: 'row', left: 'Diskon', right: '-' + money(o.discount) });
-      if (o.rounding > 0) content.push({ type: 'row', left: 'Pembulatan', right: money(o.rounding) });
+    if ((o?.discount || 0) > 0 || (o?.rounding || 0) > 0) {
+      content.push({ type: 'row', left: 'Subtotal', right: money(sumItems(o?.items)) });
+      if (o?.discount > 0) content.push({ type: 'row', left: 'Diskon', right: '-' + money(o?.discount) });
+      if (o?.rounding > 0) content.push({ type: 'row', left: 'Pembulatan', right: money(o?.rounding) });
     }
-    content.push({ type: 'row', left: 'TOTAL', right: money(o.total), bold: true });
-    content.push({ type: 'row', left: `Bayar (${o.payment})`, right: money(o.paid) });
-    content.push({ type: 'row', left: 'Kembali', right: money(o.change) });
+    content.push({ type: 'row', left: 'TOTAL', right: money(o?.total), bold: true });
+    content.push({ type: 'row', left: `Bayar (${o?.payment})`, right: money(o?.paid) });
+    content.push({ type: 'row', left: 'Kembali', right: money(o?.change) });
     if (remainOf(o) > 0) content.push({ type: 'row', left: 'SISA BELUM BAYAR', right: money(remainOf(o)), bold: true });
     content.push(receiptDivider());
     content.push(receiptText('Terima kasih telah berkunjung!', 'center', true));
@@ -95,11 +141,481 @@ async function postPrint(content, reference, urlEndpoint) {
   if (!response.ok) throw new Error(data.fix || data.detail || data.error || `Gagal mencetak (${response.status})`);
   return { job: data, printer: health.printer?.name || 'Printer Bluetooth' };
 }
-const sendPrintJob = (order, type, url) => postPrint(buildReceipt(order, type), `${order.id}-${type}`, url);
+const sendPrintJob = (order, type, url) => postPrint(buildReceipt(order, type), `${order?.id}-${type}`, url);
 
-/* ===================== Aplikasi ===================== */
-function App() {
-  // draf pesanan (beberapa keranjang) dipulihkan dari localStorage
+/* ===================== Komponen Pendukung ===================== */
+function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
+  const safeOrders = Array.isArray(orders) ? orders : [];
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Status</th><th>Cetak</th><th>Pelanggan</th><th>Lokasi</th><th>Waktu</th><th>Total</th><th>Metode</th><th>Aksi / Cetak</th>
+          </tr>
+        </thead>
+        <tbody>
+          {safeOrders.map(o => {
+            const isFullyPrinted = o.kitchen_printed && o.customer_printed;
+            const st = statusOf(o);
+            return (
+              <tr key={o.id} style={{ cursor: 'pointer', background: isFullyPrinted ? 'transparent' : '#fefce8' }} onClick={() => onSelectOrder(o)}>
+                <td data-label="ID"><b className="mono">{o.id}</b>{o._queued && <span className="cat-badge" style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e' }}>Antre</span>}</td>
+                <td data-label="Status"><span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span></td>
+                <td data-label="Cetak">
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.kitchen_printed ? '#dcfce7' : '#fef08a', color: o.kitchen_printed ? '#166534' : '#854d0e' }}>{o.kitchen_printed ? 'Dap✓' : 'Dap!'}</span>
+                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.customer_printed ? '#dcfce7' : '#fef08a', color: o.customer_printed ? '#166534' : '#854d0e' }}>{o.customer_printed ? 'Kas✓' : 'Kas!'}</span>
+                  </div>
+                </td>
+                <td data-label="Pelanggan">{o.customer || '-'}</td>
+                <td data-label="Lokasi"><span className="cat-badge">{o.location}</span></td>
+                <td data-label="Waktu"><div className="time-cell"><span>{o.date}</span><small>{o.time}</small></div></td>
+                <td data-label="Total"><b>{money(o.total)}</b></td>
+                <td data-label="Metode">
+                  <span className={remainOf(o) > 0 ? 'cat-badge' : ''} style={remainOf(o) > 0 ? { background: '#fee2e2', color: '#991b1b' } : {}}>
+                    {remainOf(o) > 0 ? (o.payment === 'Belum Bayar' ? 'Belum Bayar' : `${o.payment} · Sisa ${money(remainOf(o))}`) : o.payment}
+                  </span>
+                </td>
+                <td onClick={e => e.stopPropagation()}>
+                  <div className="print-actions">
+                    <button className="print-btn" onClick={() => onSelectOrder(o)} title="Lihat Detail"><Eye size={14} /> Detail</button>
+                    <button className="print-btn" onClick={() => printOrder(o, 'kitchen')}><Printer size={14} /> Dapur</button>
+                    <button className="print-btn" onClick={() => printOrder(o, 'customer')}><Printer size={14} /> Struk Kasir</button>
+                    {onDelete && <button className="print-btn" title="Hapus transaksi" style={{ background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' }} onClick={() => onDelete(o)}><Trash2 size={14} /> Hapus</button>}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          {safeOrders.length === 0 && <tr><td colSpan="9" className="empty-table" style={{ textAlign: 'center', padding: '2rem' }}>Belum ada transaksi.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------- Donut chart SVG untuk metode bayar ---------- */
+function DonutChart({ slices, colors }) {
+  const size = 100, r = 38, cx = 50, cy = 50, stroke = 12;
+  const circ = 2 * Math.PI * r;
+  const total = slices.reduce((s, v) => s + v, 0) || 1;
+  let offset = 0;
+  return (
+    <svg viewBox="0 0 100 100" className="db-donut" aria-hidden="true">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--line)" strokeWidth={stroke} />
+      {slices.map((v, i) => {
+        const dash = (v / total) * circ;
+        const gap = circ - dash;
+        const el = (
+          <circle key={i} cx={cx} cy={cy} r={r} fill="none"
+            stroke={colors[i]} strokeWidth={stroke}
+            strokeDasharray={`${dash} ${gap}`}
+            strokeDashoffset={-offset}
+            strokeLinecap="butt"
+            transform="rotate(-90 50 50)"
+          />
+        );
+        offset += dash;
+        return el;
+      })}
+    </svg>
+  );
+}
+
+function Delta({ cur, prev }) {
+  if (!prev && !cur) return <span className="db-delta flat">–</span>;
+  if (!prev) return <span className="db-delta up"><TrendingUp size={13} />Baru</span>;
+  const p = Math.round(((cur - prev) / prev) * 100);
+  if (p === 0) return <span className="db-delta flat">0%</span>;
+  return <span className={'db-delta ' + (p > 0 ? 'up' : 'down')}>{p > 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{p > 0 ? '+' : ''}{p}%</span>;
+}
+
+/* ===================== Dashboard (Admin) ===================== */
+function DashboardView({ orders, items, onOpenHistory, onOpenQueue }) {
+  const [range, setRange] = useState(7);
+
+  const d = useMemo(() => {
+    const list = Array.isArray(orders) ? orders : [];
+    const ymd = dt => dt.toLocaleDateString('en-CA');
+    const back = n => { const x = new Date(); x.setDate(x.getDate() - n); return ymd(x); };
+    const curDates = Array.from({ length: range }, (_, i) => back(i));
+    const cur = new Set(curDates);
+    const prv = new Set(Array.from({ length: range }, (_, i) => back(i + range)));
+    const curO = list.filter(o => cur.has(o.date));
+    const prvO = list.filter(o => prv.has(o.date));
+    const sum = (l, f) => l.reduce((s, o) => s + f(o), 0);
+    const porsi = o => (o.items || []).reduce((s, i) => s + (i.qty || 0), 0);
+    const hourOf = o => { const h = parseInt(String(o.time || ''), 10); return isNaN(h) ? null : h; };
+
+    const sales = sum(curO, o => o.total || 0), prevSales = sum(prvO, o => o.total || 0);
+    const tx = curO.length, prevTx = prvO.length;
+    const avg = tx ? Math.round(sales / tx) : 0, prevAvg = prevTx ? Math.round(prevSales / prevTx) : 0;
+    const qty = sum(curO, porsi), prevQty = sum(prvO, porsi);
+    const disc = sum(curO, o => o.discount || 0);
+
+    // breakdown performa harian / per jam (pengganti grafik)
+    let breakdown = [];
+    if (range === 1) {
+      const hrs = Array.from({ length: 16 }, (_, i) => i + 8);
+      const allHrs = hrs.map(h => {
+        const matching = curO.filter(o => hourOf(o) === h);
+        const s = sum(matching, o => o.total || 0);
+        return {
+          id: `jam-${h}`,
+          title: `Pukul ${String(h).padStart(2, '0')}:00 - ${String(h + 1).padStart(2, '0')}:00`,
+          subDate: '',
+          sales: s,
+          tx: matching.length,
+          avg: matching.length ? Math.round(s / matching.length) : 0,
+        };
+      });
+      const active = allHrs.filter(x => x.tx > 0);
+      breakdown = active.length ? active : allHrs.slice(0, 8);
+    } else {
+      breakdown = curDates.map((ds, idx) => {
+        const matching = curO.filter(o => o.date === ds);
+        const s = sum(matching, o => o.total || 0);
+        const [yr, mo, dy] = ds.split('-').map(Number);
+        const dt = new Date(yr, mo - 1, dy);
+        const dayLabel = idx === 0 ? 'Hari ini' : idx === 1 ? 'Kemarin' : dt.toLocaleDateString('id-ID', { weekday: 'long' });
+        const dateFormatted = dt.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+        return {
+          id: ds,
+          title: dayLabel,
+          subDate: dateFormatted,
+          sales: s,
+          tx: matching.length,
+          avg: matching.length ? Math.round(s / matching.length) : 0,
+          isToday: idx === 0,
+        };
+      });
+    }
+
+    const maxBreakdownSales = Math.max(...breakdown.map(b => b.sales), 1);
+    const bestBreakdown = breakdown.find(b => b.sales === maxBreakdownSales && b.sales > 0);
+
+    // menu trending
+    const tally = l => {
+      const m = {};
+      l.forEach(o => (o.items || []).forEach(i => {
+        const n = baseName(i.name);
+        const e = m[n] || (m[n] = { qty: 0, rev: 0, cat: i.category || 'Lainnya' });
+        e.qty += i.qty || 0; e.rev += (i.qty || 0) * (i.price || 0);
+      }));
+      return m;
+    };
+    const tc = tally(curO), tp = tally(prvO);
+    const top = Object.entries(tc).sort((a, b) => b[1].qty - a[1].qty).slice(0, 8)
+      .map(([name, v]) => {
+        const prev = tp[name]?.qty || 0;
+        return { name, ...v, prev, hot: v.qty >= 3 && (prev === 0 || v.qty / prev >= 1.3) };
+      });
+
+    // kategori
+    const catMap = {};
+    Object.values(tc).forEach(v => { catMap[v.cat] = (catMap[v.cat] || 0) + v.rev; });
+    const cats = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
+
+    // jam sibuk
+    const hrs = Array.from({ length: 16 }, (_, i) => i + 8);
+    const peak = hrs.map(h => curO.filter(o => hourOf(o) === h).length);
+    const peakMax = Math.max(...peak, 1);
+
+    // metode bayar
+    const pay = { Tunai: 0, QRIS: 0, Transfer: 0 };
+    list.forEach(o => {
+      if (Array.isArray(o.payments)) o.payments.forEach(p => { if (cur.has(p.d)) pay[p.m] = (pay[p.m] || 0) + (p.a || 0); });
+      else if (cur.has(o.date) && o.payment !== 'Belum Bayar') pay[o.payment] = (pay[o.payment] || 0) + settledOf(o);
+    });
+    const payTotal = Object.values(pay).reduce((s, v) => s + v, 0);
+
+    // kasir
+    const cm = {};
+    curO.forEach(o => { const c = o.cashier || 'Lainnya'; const e = cm[c] || (cm[c] = { amt: 0, n: 0 }); e.amt += o.total || 0; e.n++; });
+    const cashiers = Object.entries(cm).sort((a, b) => b[1].amt - a[1].amt);
+
+    // bon & antrian
+    const bonOrders = list.filter(o => remainOf(o) > 0);
+    const bon = sum(bonOrders, remainOf);
+    const todayStr = ymd(new Date());
+    const act = list.filter(o => o.date === todayStr && statusOf(o) !== 'Diantar');
+    const live = { Baru: 0, Dimasak: 0, Siap: 0 };
+    act.forEach(o => { const s = statusOf(o); if (live[s] !== undefined) live[s]++; });
+
+    // stok
+    const low = (items || []).filter(m => m.active && (m.sold_out || (m.stock != null && m.stock <= 5)))
+      .sort((a, b) => (b.sold_out ? 1 : 0) - (a.sold_out ? 1 : 0) || (a.stock ?? 0) - (b.stock ?? 0)).slice(0, 6);
+
+    return { sales, prevSales, tx, prevTx, avg, prevAvg, qty, prevQty, disc, breakdown, maxBreakdownSales, bestBreakdown, top, cats, peak, peakMax, hrs, pay, payTotal, cashiers, bon, bonN: bonOrders.length, live, liveN: act.length, low };
+  }, [orders, items, range]);
+
+  const rangeName = range === 1 ? 'Hari ini' : range === 7 ? '7 hari terakhir' : '30 hari terakhir';
+  const prevName = range === 1 ? 'kemarin' : `${range} hari sebelumnya`;
+  const topMax = d.top[0]?.qty || 1;
+  const catMax = d.cats[0]?.[1] || 1;
+  const PAYC = { Tunai: 'var(--ok)', QRIS: 'var(--p)', Transfer: '#7c3aed' };
+  const PAYC_HEX = { Tunai: '#16a34a', QRIS: '#2563eb', Transfer: '#7c3aed' };
+  const LIVEC = { Baru: ['var(--warn-s)', 'var(--warn)'], Dimasak: ['var(--p-s)', 'var(--p)'], Siap: ['var(--ok-s)', 'var(--ok-d)'] };
+
+  return (
+    <div className="content">
+      <div className="db">
+
+        {/* Header & filter rentang waktu */}
+        <div className="db-bar">
+          <div>
+            <h3>Ringkasan bisnis</h3>
+            <p>Performa kedai · {rangeName} dibanding {prevName}.</p>
+          </div>
+          <div className="db-seg" role="tablist">
+            {[[1, 'Hari ini'], [7, '7 Hari'], [30, '30 Hari']].map(([v, l]) => (
+              <button key={v} type="button" className={range === v ? 'on' : ''} onClick={() => setRange(v)}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* 4 KPI utama */}
+        <div className="db-kpis">
+          <div className="db-kpi db-kpi-blue">
+            <div className="db-kpi-top">
+              <span className="db-kpi-ico"><TrendingUp size={18} /></span>
+              <Delta cur={d.sales} prev={d.prevSales} />
+            </div>
+            <span className="l">Total Omzet</span>
+            <b>{moneyShort(d.sales)}</b>
+            <span className="db-kpi-prev">vs {prevName}: {moneyShort(d.prevSales)}</span>
+          </div>
+          <div className="db-kpi db-kpi-green">
+            <div className="db-kpi-top">
+              <span className="db-kpi-ico"><ShoppingCart size={18} /></span>
+              <Delta cur={d.tx} prev={d.prevTx} />
+            </div>
+            <span className="l">Transaksi</span>
+            <b>{d.tx}</b>
+            <span className="db-kpi-prev">Rata-rata: {moneyShort(d.avg)}</span>
+          </div>
+          <div className="db-kpi db-kpi-amber">
+            <div className="db-kpi-top">
+              <span className="db-kpi-ico"><Package size={18} /></span>
+              <Delta cur={d.qty} prev={d.prevQty} />
+            </div>
+            <span className="l">Porsi terjual</span>
+            <b>{d.qty}</b>
+            <span className="db-kpi-prev">Diskon: {moneyShort(d.disc)}</span>
+          </div>
+          <div className={'db-kpi db-kpi-red' + (d.bon > 0 ? ' alert' : '')}>
+            <div className="db-kpi-top">
+              <span className="db-kpi-ico"><AlertTriangle size={18} /></span>
+              {d.bonN > 0 && <span className="db-delta down">{d.bonN} bon</span>}
+            </div>
+            <span className="l">Tagihan belum lunas</span>
+            <b>{money(d.bon)}</b>
+            {d.bonN > 0
+              ? <button type="button" onClick={onOpenHistory} className="db-kpi-link">Lihat bon ›</button>
+              : <span className="db-kpi-prev">Semua lunas ✓</span>
+            }
+          </div>
+        </div>
+
+        {/* Rincian performa harian / berkala (pengganti grafik) */}
+        <section className="ui-card db-breakdown-card">
+          <div className="ui-title">
+            <div>
+              <h3>Rincian Penjualan {range === 1 ? 'Hari Ini' : range === 7 ? '7 Hari Terakhir' : '30 Hari Terakhir'}</h3>
+              <p>Performa omzet dan jumlah transaksi {range === 1 ? 'per jam' : 'tiap hari'}.</p>
+            </div>
+            {d.bestBreakdown && (
+              <span className="db-peak-badge">
+                <Crown size={14} /> Puncak: {d.bestBreakdown.title} {d.bestBreakdown.subDate ? `(${d.bestBreakdown.subDate})` : ''} · {moneyShort(d.bestBreakdown.sales)}
+              </span>
+            )}
+          </div>
+          {d.breakdown.some(b => b.sales > 0 || b.tx > 0) ? (
+            <div className="db-breakdown-list">
+              {d.breakdown.map(item => {
+                const isBest = d.bestBreakdown && item.id === d.bestBreakdown.id;
+                const pct = Math.max(0, Math.min(100, Math.round((item.sales / d.maxBreakdownSales) * 100)));
+                return (
+                  <div key={item.id} className={'db-breakdown-row' + (isBest ? ' best' : '') + (item.isToday ? ' today' : '')}>
+                    <div className="db-bd-date">
+                      <div className="db-bd-day">
+                        <b>{item.title}</b>
+                        {item.subDate && <span className="db-bd-subdate">{item.subDate}</span>}
+                        {item.isToday && <span className="db-bd-tag today">Hari ini</span>}
+                        {isBest && <span className="db-bd-tag best"><Crown size={11} /> Tertinggi</span>}
+                      </div>
+                      <div className="db-bd-meta">
+                        <span>{item.tx} transaksi</span>
+                        {item.tx > 0 && <span>· Rata-rata {moneyShort(item.avg)}/nota</span>}
+                      </div>
+                    </div>
+
+                    <div className="db-bd-progress">
+                      <div className="db-track">
+                        <div
+                          className={'db-fill' + (isBest ? ' db-fill-best' : '')}
+                          style={{ width: `${item.sales > 0 ? Math.max(5, pct) : 0}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="db-bd-val">
+                      <strong>{money(item.sales)}</strong>
+                      <small className="db-bd-pct">{item.sales > 0 ? `${pct}% dari puncak` : '0 transaksi'}</small>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <div className="ui-empty">Belum ada data penjualan pada periode ini.</div>}
+        </section>
+
+        <div className="db-grid">
+          {/* Menu trending */}
+          <section className="ui-card db-span2">
+            <div className="ui-title">
+              <div><h3>Menu terlaris</h3><p>Peringkat porsi terjual, dibandingkan {prevName}.</p></div>
+              <Flame size={20} color="var(--warn)" />
+            </div>
+            {d.top.length ? (
+              <div className="db-rank">
+                {d.top.map((m, i) => (
+                  <div className="db-rank-row" key={m.name}>
+                    <div className="db-no">{i === 0 ? <Crown size={15} /> : i + 1}</div>
+                    <div className="db-rank-main">
+                      <b><span className="n">{m.name}</span>{m.hot && <span className="db-hot"><Flame size={11} />Trending</span>}</b>
+                      <small>{m.cat} · {moneyShort(m.rev)}</small>
+                      <div className="db-track"><div className="db-fill" style={{ width: Math.max(4, Math.round((m.qty / topMax) * 100)) + '%' }}></div></div>
+                    </div>
+                    <div className="db-rank-end"><strong>{m.qty} porsi</strong><Delta cur={m.qty} prev={m.prev} /></div>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="ui-empty">Belum ada penjualan pada periode ini.</div>}
+          </section>
+
+          {/* Jam sibuk */}
+          <section className="ui-card">
+            <div className="ui-title">
+              <div><h3>Jam sibuk</h3><p>Transaksi per jam · {rangeName.toLowerCase()}.</p></div>
+              <Clock size={20} color="var(--p)" />
+            </div>
+            {d.peak.some(v => v > 0) ? (
+              <div className="db-cols">
+                {d.peak.map((v, i) => (
+                  <div key={i} className={'db-col ' + (v === d.peakMax && v > 0 ? 'hi' : '')} title={`${d.hrs[i]}:00 · ${v} transaksi`}>
+                    <i style={{ height: Math.max(4, Math.round((v / d.peakMax) * 100)) + '%' }}></i>
+                    <span>{d.hrs[i] % 2 === 0 ? d.hrs[i] : ''}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="ui-empty">Belum ada data jam.</div>}
+          </section>
+
+          {/* Metode bayar - donut + legend */}
+          <section className="ui-card">
+            <div className="ui-title">
+              <div><h3>Metode pembayaran</h3><p>Distribusi uang masuk.</p></div>
+              <Wallet size={20} color="var(--ok)" />
+            </div>
+            {d.payTotal > 0 ? (
+              <div className="db-pay-wrap">
+                <DonutChart
+                  slices={Object.values(d.pay)}
+                  colors={Object.keys(d.pay).map(k => PAYC_HEX[k] || '#94a3b8')}
+                />
+                <div className="db-pay-legend">
+                  {Object.entries(d.pay).map(([k, v]) => (
+                    <div key={k} className="db-pay-row">
+                      <span className="db-pay-dot" style={{ background: PAYC_HEX[k] }}></span>
+                      <span className="db-pay-name">{k}</span>
+                      <span className="db-pay-pct">{d.payTotal ? Math.round(v / d.payTotal * 100) : 0}%</span>
+                      <b className="db-pay-amt">{moneyShort(v)}</b>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : <div className="ui-empty">Belum ada pembayaran masuk.</div>}
+          </section>
+
+          {/* Kategori */}
+          <section className="ui-card">
+            <div className="ui-title">
+              <div><h3>Penjualan per kategori</h3><p>Kontribusi omzet tiap kategori.</p></div>
+              <BarChart3 size={20} color="#7c3aed" />
+            </div>
+            {d.cats.length ? (
+              <div className="db-hb">
+                {d.cats.map(([c, v], i) => {
+                  const pct = Math.round(v / catMax * 100);
+                  return (
+                    <div className="db-hb-row" key={c}>
+                      <div className="top"><b>{c}</b><span>{moneyShort(v)}</span></div>
+                      <div className="db-track-wrap">
+                        <div className="db-track">
+                          <div className="db-fill db-fill-violet" style={{ width: Math.max(4, pct) + '%' }}></div>
+                        </div>
+                        <span className="db-pct-lbl">{pct}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <div className="ui-empty">Belum ada data kategori.</div>}
+          </section>
+
+          {/* Rekap kasir */}
+          <section className="ui-card">
+            <div className="ui-title">
+              <div><h3>Rekap kasir</h3><p>Penjualan per akun kasir.</p></div>
+              <Users size={20} color="var(--p)" />
+            </div>
+            {d.cashiers.length ? (
+              <div className="db-cash">
+                {d.cashiers.map(([n, v]) => (
+                  <div className="db-cash-row" key={n}>
+                    <div className="db-av">{String(n)[0].toUpperCase()}</div>
+                    <div className="m">
+                      <b><span>{n}</span><span>{moneyShort(v.amt)}</span></b>
+                      <small>{v.n} transaksi · avg {moneyShort(d.cashiers[0][1].n ? Math.round(v.amt / v.n) : 0)}</small>
+                      <div className="db-track"><div className="db-fill" style={{ width: Math.max(4, Math.round(v.amt / d.cashiers[0][1].amt * 100)) + '%' }}></div></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="ui-empty">Belum ada data kasir.</div>}
+          </section>
+
+          {/* Operasional & stok */}
+          <section className="ui-card">
+            <div className="ui-title">
+              <div><h3>Status dapur hari ini</h3><p>{d.liveN} pesanan aktif sekarang.</p></div>
+              <ChefHat size={20} color="var(--warn)" />
+            </div>
+            <div className="db-live">
+              {['Baru', 'Dimasak', 'Siap'].map(s => (
+                <button key={s} type="button" onClick={onOpenQueue} style={{ background: LIVEC[s][0], color: LIVEC[s][1] }}>
+                  <b>{d.live[s]}</b><span>{s}</span>
+                </button>
+              ))}
+            </div>
+            <p className="db-sub">Stok menipis / habis</p>
+            <div className="db-stock">
+              {d.low.map(m => (
+                <div key={m.id} className={'db-stock-row ' + (m.sold_out ? 'out' : '')}><b>{m.name}</b><span>{m.sold_out ? 'HABIS' : `Sisa ${m.stock}`}</span></div>
+              ))}
+              {!d.low.length && <div className="ui-empty" style={{ padding: '10px 0' }}>Semua stok aman ✓</div>}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== Aplikasi Utama ===================== */
+export default function App() {
   const init = useRef(null);
   if (!init.current) {
     const s = read('z_drafts', null);
@@ -143,6 +659,8 @@ function App() {
   const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [queueCount, setQueueCount] = useState(() => read('z_queue', []).length);
   const flushing = useRef(false);
+
+  const [notifPerm, setNotifPerm] = useState(() => typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default');
 
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [addingToOrder, setAddingToOrder] = useState(null);
@@ -192,6 +710,11 @@ function App() {
   const [stockDraft, setStockDraft] = useState('');
   const [tableSheet, setTableSheet] = useState(null);
   const [qTab, setQTab] = useState('Semua');
+  const [kdsStation, setKdsStation] = useState('Semua'); // 'Semua', 'Makanan', 'Minuman'
+  const [kdsSyncing, setKdsSyncing] = useState(false);
+  const [kdsFullscreen, setKdsFullscreen] = useState(false);
+  const [kdsTime, setKdsTime] = useState(() => new Date());
+  const [realtimeConnected, setRealtimeConnected] = useState(true);
   const [histFilter, setHistFilter] = useState('Hari ini');
   const [shiftWho, setShiftWho] = useState('');
   const [shiftForm, setShiftForm] = useState({ opening: '', counted: '', note: '' });
@@ -205,14 +728,41 @@ function App() {
 
   const today = new Date().toLocaleDateString('en-CA');
 
-  /* ---------- toast ---------- */
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      flash('Browser ini tidak mendukung notifikasi latar belakang.', 4000);
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotifPerm(permission);
+      if (permission === 'granted') {
+        flash('Notifikasi langsung aktif! Anda akan menerima peringatan meski di luar web.', 4000);
+        new Notification('Zayga POS Terhubung', { body: 'Notifikasi latar belakang berhasil diaktifkan.' });
+      } else {
+        flash('Izin notifikasi ditolak oleh browser.', 4000);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const testNotification = () => {
+    beep(880, 0.2, 2); buzz(80);
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('Tes notifikasi Zayga', { body: 'Jika ini muncul, notifikasi perangkat sudah siap.', tag: 'zayga-test' });
+      }
+    } catch {}
+    flash('Tes suara & notifikasi dijalankan.', 2500);
+  };
+
   const flash = (msg, ms = 5000, action = null) => {
     clearTimeout(toastTimer.current);
     setToast({ msg, action });
     toastTimer.current = setTimeout(() => setToast(null), ms);
   };
 
-  /* ---------- data ---------- */
   const fetchData = async () => {
     try {
       const [resUsers, resMenu, resOrders, resLogs, resSettings, resShifts] = await Promise.all([
@@ -265,7 +815,6 @@ function App() {
         }
         return x;
       }));
-      // Pesanan yang sempat antre offline tetap hanya mencetak tiket dapur.
       for (const order of readyToPrint) await autoPrint(order);
     }
   };
@@ -278,10 +827,13 @@ function App() {
     window.addEventListener('online', on); window.addEventListener('offline', off); document.addEventListener('visibilitychange', vis);
     const iv = setInterval(() => { if (read('z_queue', []).length) flushQueue(); }, 20000);
     const tk = setInterval(() => setTick(t => t + 1), 30000);
-    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); document.removeEventListener('visibilitychange', vis); clearInterval(iv); clearInterval(tk); };
+    const clockTimer = setInterval(() => setKdsTime(new Date()), 1000);
+    return () => {
+      window.removeEventListener('online', on); window.removeEventListener('offline', off); document.removeEventListener('visibilitychange', vis);
+      clearInterval(iv); clearInterval(tk); clearInterval(clockTimer);
+    };
   }, []);
 
-  // sinkronisasi realtime antar kasir
   useEffect(() => {
     if (!user) return;
     const ch = supabase.channel('zayga-live')
@@ -290,27 +842,58 @@ function App() {
           const n = p.new;
           const exists = ordersRef.current.some(x => x.id === n.id);
           setOrders(o => o.some(x => x.id === n.id) ? o : [n, ...o]);
-          if (!exists && n.cashier !== userRef.current?.username && userRef.current?.role !== 'Dapur') {
-            beep(880, 0.15, 2);
-            flash(`Pesanan baru ${locLabel(n.location)} dari ${n.cashier}`);
+
+          if (!exists && n.cashier !== userRef.current?.username) {
+            if (userRef.current?.role === 'Dapur') {
+              kitchenChime();
+            } else {
+              beep(880, 0.2, 3);
+            }
+            buzz(100);
+            const msgTitle = userRef.current?.role === 'Dapur' ? 'PESANAN BARU MASUK!' : `Pesanan baru ${locLabel(n.location)}`;
+            const msgBody = `${locLabel(n.location)} · Oleh: ${n.cashier} · ${(n.items || []).length} item`;
+            flash(msgTitle, 8000);
+
+            try {
+              if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification(msgTitle, {
+                  body: msgBody,
+                  tag: `zayga-new-${n.id}`,
+                  renotify: true
+                });
+              }
+            } catch (e) {
+              console.error('Gagal menampilkan push notification:', e);
+            }
           }
         } else if (p.eventType === 'UPDATE') {
           const n = p.new;
           const prev = ordersRef.current.find(x => x.id === n.id);
           setOrders(o => o.map(x => x.id === n.id ? { ...x, ...n } : x));
-          if (n.order_status === 'Siap' && prev && prev.order_status !== 'Siap' &&
-              localStatus.current[n.id] !== 'Siap' && userRef.current?.role === 'Kasir') {
-            beep(660, 0.2, 3);
-            buzz(80);
-            flash(`PESANAN SIAP DIANTAR · ${locLabel(n.location)} · ${n.customer || 'Umum'}`, 9000);
-            try {
-              if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification('Pesanan Zayga siap diantar', {
-                  body: `${locLabel(n.location)} · ${n.customer || 'Umum'} · ${n.id}`,
-                  tag: `zayga-ready-${n.id}`
-                });
-              }
-            } catch {}
+
+          const isFrontStaff = userRef.current?.role !== 'Dapur';
+          if (isFrontStaff) {
+            const prevItems = prev?.items || [];
+            const newlyReady = (n.items || []).filter((it, i) => itemSt(it) === 'Siap' && itemSt(prevItems[i] || {}) !== 'Siap');
+            const isFullReady = n.order_status === 'Siap' && prev?.order_status !== 'Siap';
+
+            if (isFullReady || newlyReady.length > 0) {
+              beep(660, 0.22, 3);
+              buzz([150, 80, 150, 80, 250]);
+              const itemNames = newlyReady.length ? newlyReady.map(i => i.name).join(', ') : 'Seluruh menu';
+              const readyMsg = `🔔 SIAP DIANTAR: ${locLabel(n.location)} · ${itemNames} (${n.customer || 'Umum'})`;
+              flash(readyMsg, 10000);
+
+              try {
+                if ('Notification' in window && Notification.permission === 'granted') {
+                  new Notification(`Pesanan Siap Diantar! · ${locLabel(n.location)}`, {
+                    body: `Menu: ${itemNames} · Pelanggan: ${n.customer || 'Umum'}`,
+                    tag: `zayga-ready-${n.id}`,
+                    renotify: true
+                  });
+                }
+              } catch {}
+            }
           }
           delete localStatus.current[n.id];
         } else if (p.eventType === 'DELETE') {
@@ -321,11 +904,67 @@ function App() {
         if (p.eventType === 'DELETE') setItems(it => it.filter(x => x.id !== p.old.id));
         else setItems(it => it.some(x => x.id === p.new.id) ? it.map(x => x.id === p.new.id ? { ...x, ...p.new } : x) : [...it, p.new]);
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeConnected(true);
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setRealtimeConnected(false);
+        }
+      });
     return () => { supabase.removeChannel(ch); };
   }, [user?.username]);
 
-  // detail bon selalu mengikuti data terbaru
+  // Fallback polling periodik: memastikan pesanan masuk ke KDS laptop dan pesanan siap selalu terkirim ke kasir
+  useEffect(() => {
+    if (!user) return;
+    const pollId = setInterval(async () => {
+      if (!navigator.onLine) return;
+      try {
+        const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+        if (data) {
+          setOrders(prev => {
+            const prevMap = new Map(prev.map(p => [p.id, p]));
+            const isKitchen = userRef.current?.role === 'Dapur';
+            const isFrontStaff = !isKitchen;
+
+            // 1. Dapur: deteksi pesanan baru masuk
+            if (isKitchen) {
+              const freshOrders = data.filter(d => !prevMap.has(d.id));
+              if (freshOrders.length > 0) {
+                kitchenChime();
+                flash(`PESANAN BARU MASUK (${freshOrders.length})`, 6000);
+              }
+            }
+
+            // 2. Kasir/Depan: deteksi pesanan atau item yang baru saja siap
+            if (isFrontStaff) {
+              const newlyReadyOrder = data.find(d => {
+                const old = prevMap.get(d.id);
+                if (!old) return false;
+                const oldItems = old.items || [];
+                const hasNewReadyItem = (d.items || []).some((it, i) => itemSt(it) === 'Siap' && itemSt(oldItems[i] || {}) !== 'Siap');
+                const wasNotReady = old.order_status !== 'Siap' && d.order_status === 'Siap';
+                return wasNotReady || hasNewReadyItem;
+              });
+
+              if (newlyReadyOrder) {
+                beep(660, 0.22, 3);
+                buzz([150, 80, 150, 80, 250]);
+                flash(`🔔 SIAP DIANTAR: ${locLabel(newlyReadyOrder.location)} (${newlyReadyOrder.customer || 'Umum'})`, 10000);
+              }
+            }
+
+            return data;
+          });
+          setRealtimeConnected(true);
+        }
+      } catch (e) {
+        // silent
+      }
+    }, 9000);
+    return () => clearInterval(pollId);
+  }, [user?.username]);
+
   useEffect(() => {
     if (!selectedOrder) return;
     const f = orders.find(o => o.id === selectedOrder.id);
@@ -333,8 +972,8 @@ function App() {
   }, [orders]);
 
   useEffect(() => {
-    if (user?.role === 'Dapur' && page !== 'Antrian') setPage('Antrian');
-    if (user?.role === 'Kasir' && ['Dashboard', 'Laporan', 'Kelola Menu'].includes(page)) setPage('Pesanan');
+    if (user?.role === 'Dapur' && page !== 'Antrian' && page !== 'Pengaturan') setPage('Antrian');
+    if (user?.role === 'Kasir' && ['Dashboard', 'Kelola Menu'].includes(page)) setPage('Pesanan');
   }, [user?.role]);
 
   useEffect(() => { setServerDraft(serverPrintUrl); }, [serverPrintUrl]);
@@ -355,13 +994,11 @@ function App() {
     return () => window.removeEventListener('resize', calc);
   }, [user, page]);
 
-  // simpan draf pesanan (tidak saat mode tambah ke bon)
   useEffect(() => {
     if (addingToOrder) return;
     write('z_drafts', { draftId, drafts: drafts.map(d => d.id === draftId ? { id: draftId, cart, customer, location, notes, discount } : d) });
   }, [cart, customer, location, notes, discount, drafts, draftId, addingToOrder]);
 
-  /* ---------- navigasi ---------- */
   const allNavItems = [
     [LayoutDashboard, 'Dashboard', ['Admin']],
     [ShoppingCart, 'Pesanan', ['Admin', 'Kasir']],
@@ -369,31 +1006,24 @@ function App() {
     [ChefHat, 'Antrian', ['Admin', 'Kasir', 'Dapur']],
     [ClipboardList, 'Riwayat', ['Admin', 'Kasir']],
     [Lock, 'Tutup Kasir', ['Admin']],
-    [BarChart3, 'Laporan', ['Admin']],
     [Utensils, 'Kelola Menu', ['Admin']],
-    [Settings, 'Pengaturan', ['Admin', 'Kasir']]
+    [Settings, 'Pengaturan', ['Admin', 'Kasir', 'Dapur']]
   ];
   const visibleNavItems = allNavItems.filter(([_, __, roles]) => user && roles.includes(user.role));
-  const rolePages = {
-    Admin: ['Dashboard', 'Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Laporan', 'Kelola Menu', 'Pengaturan'],
-    Kasir: ['Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Pengaturan'],
-    Dapur: ['Antrian']
-  };
   const categories = ['Semua', 'Snack', 'Mie', 'Popmie', 'Nasi', 'Minuman', 'Kopi', 'Soft Drink'];
 
-  /* ---------- turunan data ---------- */
-  const todays = orders.filter(o => o.date === today);
-  const siapCount = todays.filter(o => statusOf(o) === 'Siap').length;
+  const todays = orders.filter(o => o?.date === today);
+  const siapCount = todays.filter(o => statusOf(o) !== 'Diantar' && (o?.items || []).some(i => itemSt(i) === 'Siap')).length;
 
   const favNames = useMemo(() => {
     const c = {};
-    orders.forEach(o => (o.items || []).forEach(i => { const n = baseName(i.name); if (i.category !== 'Bakso') c[n] = (c[n] || 0) + i.qty; }));
+    (orders || []).forEach(o => (o?.items || []).forEach(i => { const n = baseName(i.name); if (i.category !== 'Bakso') c[n] = (c[n] || 0) + i.qty; }));
     return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 10).map(e => e[0]);
   }, [orders]);
   const menuTabs = [...(favNames.length ? ['Favorit'] : []), ...categories, 'Bakso'];
 
   const filtered = useMemo(() => {
-    let l = items.filter(x => x.active && (category === 'Semua' || category === 'Favorit' || x.category === category) && x.name.toLowerCase().includes(query.toLowerCase()));
+    let l = (items || []).filter(x => x.active && (category === 'Semua' || category === 'Favorit' || x.category === category) && x.name.toLowerCase().includes(query.toLowerCase()));
     if (category === 'Favorit') l = l.filter(x => favNames.includes(x.name)).sort((a, b) => favNames.indexOf(a.name) - favNames.indexOf(b.name));
     return l;
   }, [items, category, query, favNames]);
@@ -401,7 +1031,7 @@ function App() {
 
   const tableInfo = useMemo(() => {
     const m = {};
-    todays.forEach(o => { const k = normLoc(o.location); (m[k] = m[k] || []).push(o); });
+    todays.forEach(o => { const k = normLoc(o?.location); (m[k] = m[k] || []).push(o); });
     return m;
   }, [orders, today]);
 
@@ -410,7 +1040,6 @@ function App() {
     return [...NOTE_PRESETS, ...custom];
   }, [noteStats]);
 
-  // total: subtotal -> diskon -> pembulatan (khusus tunai)
   const subtotal = sumItems(cart);
   const discNum = Number(discount.value) || 0;
   const discAmt = addingToOrder ? 0 : Math.min(subtotal, discount.type === 'pct' ? Math.round(subtotal * Math.min(discNum, 100) / 100) : discNum);
@@ -426,7 +1055,6 @@ function App() {
   const baksoQty = cart.filter(x => String(x.id).startsWith(BAKSO_ID + '-')).reduce((sum, x) => sum + x.qty, 0);
   const cartQty = cart.reduce((sum, x) => sum + x.qty, 0);
 
-  /* ---------- draf pesanan ---------- */
   const snapshot = () => ({ id: draftId, cart, customer, location, notes, discount });
   const view = drafts.map(d => d.id === draftId ? snapshot() : d);
   const loadDraft = d => { setCart(d.cart); setCustomer(d.customer); setLocation(d.location); setNotes(d.notes); setDiscount(d.discount || { type: 'rp', value: '' }); setDraftId(d.id); };
@@ -459,7 +1087,6 @@ function App() {
     setPage('Pesanan');
   };
 
-  /* ---------- keranjang ---------- */
   const goPay = () => {
     if (!location.trim()) { flash('Pilih meja dulu sebelum membayar.', 3000); setInfoOpen(true); return; }
     setPayment('Tunai'); setPaid(''); setShowPay(true);
@@ -482,7 +1109,7 @@ function App() {
       const found = old.find(x => x.id === finalId);
       return found
         ? old.map(x => x.id === finalId ? { ...x, qty: x.qty + 1 } : x)
-        : [...old, { id: finalId, menuId: item.id, name: finalName, category: item.category, price: finalPrice, qty: 1 }];
+        : [...old, { id: finalId, menuId: item.id, name: finalName, category: item.category, price: finalPrice, qty: 1, item_status: 'Baru' }];
     });
     setSelectedItemForVariant(null);
   };
@@ -499,12 +1126,11 @@ function App() {
       const found = old.find(x => x.id === id);
       return found
         ? old.map(x => x.id === id ? { ...x, qty: x.qty + 1 } : x)
-        : [...old, { id, name, category: 'Bakso', price, qty: 1, custom: true }];
+        : [...old, { id, name, category: 'Bakso', price, qty: 1, custom: true, item_status: 'Baru' }];
     });
     setBaksoOpen(false);
   };
 
-  // kurangi / hapus item, dengan tombol "Urungkan"
   const changeQty = (id, delta) => {
     const curItem = cart.find(x => x.id === id);
     if (!curItem) return;
@@ -521,7 +1147,6 @@ function App() {
     if (line) changeQty(line.id, -1);
   };
 
-  /* ---------- tahan lama = atur stok / habis ---------- */
   const pressStart = (item) => {
     lp.current.fired = false; clearTimeout(lp.current.t);
     lp.current.t = setTimeout(() => { lp.current.fired = true; buzz(30); setStockItem(item); setStockDraft(item.stock == null ? '' : String(item.stock)); }, 550);
@@ -550,7 +1175,6 @@ function App() {
     }
   };
 
-  /* ---------- catatan per item ---------- */
   const openItemNote = (x) => { setNoteItem(x); setNoteDraft(x.note || ''); };
   const toggleNoteChip = (p) => setNoteDraft(d => {
     const parts = d.split(',').map(s => s.trim()).filter(Boolean);
@@ -578,7 +1202,6 @@ function App() {
     setNoteItem(null);
   };
 
-  /* ---------- tambah ke bon lama ---------- */
   const startAddToOrder = (order) => {
     if (!stash.current) stash.current = snapshot();
     setAddingToOrder(order); setCart([]); setNotes('');
@@ -595,11 +1218,12 @@ function App() {
   const saveAdditionToOrder = async (method = 'Belum Bayar', tendered = 0) => {
     if (!addingToOrder || !cart.length) return;
     const base = orders.find(o => o.id === addingToOrder.id) || addingToOrder;
-    const merged = [...base.items];
+    const merged = [...(base.items || [])];
     for (const c of cart) {
-      const i = merged.findIndex(x => x.id === c.id);
+      const newItem = { ...c, item_status: c.item_status || 'Baru' };
+      const i = merged.findIndex(x => x.id === c.id && itemSt(x) === 'Baru');
       if (i > -1) merged[i] = { ...merged[i], qty: merged[i].qty + c.qty };
-      else merged.push(c);
+      else merged.push({ ...newItem, item_status: 'Baru' });
     }
     const newTotal = calcTotal(merged, base.discount, base.rounding);
     const belumBayar = base.payment === 'Belum Bayar';
@@ -624,8 +1248,6 @@ function App() {
     let updated = { ...base, ...patch };
     const addedCart = cart;
 
-    // Menu tambahan selalu mengirim tiket dapur otomatis.
-    // Struk kasir tidak pernah dicetak dari proses ini.
     try {
       await sendPrintJob(
         { ...base, id: `${base.id}-T${Date.now().toString().slice(-4)}`, items: addedCart, isAddition: true, notes: extraNote },
@@ -658,7 +1280,6 @@ function App() {
     await saveAdditionToOrder(method, tendered);
   };
 
-  /* ---------- pelunasan (boleh sebagian) ---------- */
   const openSettle = (o) => { setSettling(o); setPayment('Tunai'); setPaid(''); setPartialAmt(''); setShowPay(true); };
   const confirmSettle = async () => {
     const o = settling;
@@ -693,7 +1314,6 @@ function App() {
     flash(left > 0 ? `Dibayar ${money(applied)}, sisa ${money(left)} (${locLabel(o.location)}).` : `Bon ${locLabel(o.location)} lunas (${money(applied)}).`, 5000);
   };
 
-  /* ---------- akun ---------- */
   const loginNow = (e) => {
     e.preventDefault();
     const uInput = login.username.trim().toLowerCase();
@@ -732,8 +1352,6 @@ function App() {
     }
   };
 
-  /* ---------- cetak ---------- */
-  // Otomatisasi hanya untuk tiket dapur. Struk kasir harus diminta manual.
   const autoPrint = async (o) => {
     try {
       await sendPrintJob(o, 'kitchen', activePrintUrl);
@@ -782,7 +1400,6 @@ function App() {
     finally { setPrinting(false); }
   };
 
-  /* ---------- transaksi baru ---------- */
   const finish = async () => {
     if (saving) return;
     if (!location.trim()) { flash('Lokasi meja perlu diisi agar pesanan mudah diantar.', 4000); setShowPay(false); return; }
@@ -792,11 +1409,12 @@ function App() {
     if (!isBon && payment === 'Tunai' && received < grand) { flash('Uang diterima masih kurang.', 3000); return; }
 
     setSaving(true);
+    const orderItems = cart.map(item => ({ ...item, item_status: 'Baru' }));
     const order = {
       id: 'ZG' + Date.now().toString().slice(-7),
       date: today, time: nowTime(), created_at: new Date().toISOString(),
       customer: customer.trim() || '', location: location.trim(), notes,
-      items: cart, subtotal, discount: discAmt, rounding: roundAmt, total: grand,
+      items: orderItems, subtotal, discount: discAmt, rounding: roundAmt, total: grand,
       payment, paid: received, change: isBon ? 0 : Math.max(0, received - grand),
       status: isBon ? 'Belum Lunas' : 'Lunas', order_status: 'Baru',
       payments: isBon ? [] : [ledger(payment, grand, user.username)],
@@ -833,7 +1451,30 @@ function App() {
     }
   };
 
-  /* ---------- status pesanan ---------- */
+  const syncKdsNow = async () => {
+    setKdsSyncing(true);
+    try {
+      const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+      if (data && !error) {
+        setOrders(data);
+        setRealtimeConnected(true);
+        flash('Data antrian dapur berhasil disinkronkan!', 2500);
+      }
+    } catch (e) {
+      flash('Gagal menyinkronkan data: ' + e.message, 3000);
+    } finally {
+      setTimeout(() => setKdsSyncing(false), 500);
+    }
+  };
+
+  const toggleKdsFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().then(() => setKdsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setKdsFullscreen(false)).catch(() => {});
+    }
+  };
+
   const setStatus = async (o, st) => {
     const current = statusOf(o);
     const role = user?.role;
@@ -858,13 +1499,51 @@ function App() {
     }
     if (statusOf(o) === st) return;
     localStatus.current[o.id] = st;
-    const { error } = await supabase.from('orders').update({ order_status: st }).eq('id', o.id);
+    const patch = { order_status: st, items: syncItems(o.items, st) };
+    const { error } = await supabase.from('orders').update(patch).eq('id', o.id);
     if (error) { delete localStatus.current[o.id]; flash('Gagal mengubah status: ' + error.message); return; }
-    setOrders(p => p.map(x => x.id === o.id ? { ...x, order_status: st } : x));
+    setOrders(p => p.map(x => x.id === o.id ? { ...x, ...patch } : x));
     if (st === 'Siap') flash(`${locLabel(o.location)} siap diantar.`, 3000);
   };
 
-  /* ---------- pindah / gabung / pisah ---------- */
+  const setItemStatus = async (o, itemIndex, newSt) => {
+    const role = user?.role;
+    const cur = itemSt((o?.items || [])[itemIndex] || {});
+    if (role === 'Kasir' && !(cur === 'Siap' && newSt === 'Diantar')) {
+      flash('Kasir hanya dapat mengantar menu yang sudah Siap.', 3000);
+      return;
+    }
+    if (role === 'Dapur' && (cur === 'Diantar' || newSt === 'Diantar')) {
+      flash('Menu yang sudah diantar tidak dapat diubah oleh dapur.', 3000);
+      return;
+    }
+
+    const updatedItems = (o?.items || []).map((it, idx) =>
+      idx === itemIndex ? { ...it, item_status: newSt } : { ...it, item_status: itemSt(it) }
+    );
+    const newOrderStatus = deriveStatus(updatedItems);
+
+    const patch = { items: updatedItems, order_status: newOrderStatus };
+    const { error } = await supabase.from('orders').update(patch).eq('id', o.id);
+    if (error) {
+      flash('Gagal memperbarui status item: ' + error.message);
+      return;
+    }
+    setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...patch } : x));
+  };
+
+  const deliverReady = async (o) => {
+    if (user?.role !== 'Kasir' && user?.role !== 'Admin') return;
+    const updatedItems = (o?.items || []).map(it => itemSt(it) === 'Siap' ? { ...it, item_status: 'Diantar' } : { ...it, item_status: itemSt(it) });
+    const n = updatedItems.filter((it, i) => itemSt(it) === 'Diantar' && itemSt((o?.items || [])[i]) !== 'Diantar').length;
+    if (!n) return;
+    const patch = { items: updatedItems, order_status: deriveStatus(updatedItems) };
+    const { error } = await supabase.from('orders').update(patch).eq('id', o.id);
+    if (error) { flash('Gagal menandai diantar: ' + error.message); return; }
+    setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...patch } : x));
+    flash(`${n} menu ${locLabel(o.location)} ditandai sudah diantar.`, 3000);
+  };
+
   const openMove = (o) => { setMoveOrder(o); setMoveTarget(''); };
   const closeMove = () => { if (!moveBusy) { setMoveOrder(null); setMoveTarget(''); } };
 
@@ -886,9 +1565,9 @@ function App() {
     if (src.id === tgt.id) return;
     if (!window.confirm(`Gabungkan bon ${src.id} (meja ${src.location}) ke bon ${tgt.id} (meja ${tgt.location})?\nBon ${src.id} akan dihapus dan semua itemnya masuk ke bon ${tgt.id}.`)) return;
 
-    const its = tgt.items.map(x => ({ ...x }));
-    for (const c of src.items) {
-      const i = its.findIndex(x => x.id === c.id);
+    const its = (tgt.items || []).map(x => ({ ...x }));
+    for (const c of (src.items || [])) {
+      const i = its.findIndex(x => x.id === c.id && itemSt(x) === itemSt(c));
       if (i > -1) its[i] = { ...its[i], qty: its[i].qty + c.qty };
       else its.push({ ...c });
     }
@@ -934,7 +1613,7 @@ function App() {
   const doSplit = async () => {
     const src = orders.find(x => x.id === splitOrder.id) || splitOrder;
     const moved = [], kept = [];
-    src.items.forEach((it, i) => {
+    (src.items || []).forEach((it, i) => {
       const q = Math.min(splitQty[i] || 0, it.qty);
       if (q > 0) moved.push({ ...it, qty: q });
       if (it.qty - q > 0) kept.push({ ...it, qty: it.qty - q });
@@ -944,7 +1623,7 @@ function App() {
     const total2 = sumItems(moved);
     const S = settledOf(src);
     const paid1 = Math.min(S, total1);
-    const R = S - paid1; // kelebihan bayar ikut pindah ke bon baru
+    const R = S - paid1;
     const srcPatch = {
       items: kept, subtotal: sumItems(kept), total: total1,
       paid: src.payment === 'Belum Bayar' ? 0 : paid1, change: 0
@@ -986,13 +1665,12 @@ function App() {
   };
 
   const reorder = (o) => {
-    const ok = o.items.filter(i => { const m = items.find(x => String(x.id) === String(i.menuId)); return !(m && m.sold_out); });
-    setCart(old => { const m = [...old]; ok.forEach(i => { const k = m.findIndex(x => x.id === i.id); if (k > -1) m[k] = { ...m[k], qty: m[k].qty + i.qty }; else m.push({ ...i }); }); return m; });
+    const ok = (o?.items || []).filter(i => { const m = items.find(x => String(x.id) === String(i.menuId)); return !(m && m.sold_out); });
+    setCart(old => { const m = [...old]; ok.forEach(i => { const k = m.findIndex(x => x.id === i.id); if (k > -1) m[k] = { ...m[k], qty: m[k].qty + i.qty }; else m.push({ ...i, item_status: 'Baru' }); }); return m; });
     setSelectedOrder(null); setPage('Pesanan');
-    flash(ok.length < o.items.length ? 'Sebagian item habis dan dilewati. Sisanya masuk keranjang.' : `${ok.length} menu dimasukkan ke keranjang.`, 3500);
+    flash(ok.length < (o?.items || []).length ? 'Sebagian item habis dan dilewati. Sisanya masuk keranjang.' : `${ok.length} menu dimasukkan ke keranjang.`, 3500);
   };
 
-  /* ---------- menu & pengaturan ---------- */
   const saveMenu = async () => {
     if (user.role !== 'Admin') return;
     if (!menuForm.name.trim() || Number(menuForm.price) <= 0) return;
@@ -1015,9 +1693,9 @@ function App() {
 
   const handlePageChange = (label) => {
     const allowed = {
-      Admin: ['Dashboard', 'Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Laporan', 'Kelola Menu', 'Pengaturan'],
+      Admin: ['Dashboard', 'Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Kelola Menu', 'Pengaturan'],
       Kasir: ['Pesanan', 'Denah', 'Antrian', 'Riwayat', 'Tutup Kasir', 'Pengaturan'],
-      Dapur: ['Antrian']
+      Dapur: ['Antrian', 'Pengaturan']
     };
     if (!allowed[user?.role]?.includes(label)) {
       flash('Akses ditolak. Halaman ini tidak tersedia untuk akun ' + (user?.role || '') + '.', 3000);
@@ -1036,11 +1714,10 @@ function App() {
   };
   const handleLocalPrintUrlChange = (e) => { const val = e.target.value; setLocalPrintUrl(val); localStorage.setItem('z_local_print_url', JSON.stringify(val)); };
 
-  /* ---------- tutup kasir ---------- */
   const who = user?.role === 'Admin' ? (shiftWho || user.username) : user?.username;
   const calcShift = (name) => {
     const by = { Tunai: 0, QRIS: 0, Transfer: 0 };
-    orders.forEach(o => {
+    (orders || []).forEach(o => {
       if (Array.isArray(o.payments)) o.payments.forEach(p => { if (p.d === today && p.by === name) by[p.m] = (by[p.m] || 0) + p.a; });
       else if (o.date === today && o.cashier === name && o.payment !== 'Belum Bayar') by[o.payment] = (by[o.payment] || 0) + settledOf(o);
     });
@@ -1080,7 +1757,6 @@ function App() {
     flash(diff === 0 ? 'Kasir ditutup. Uang laci pas.' : `Kasir ditutup. Selisih ${diff > 0 ? '+' : ''}${money(diff)}.`, 6000);
   };
 
-  /* ---------- pintasan keyboard ---------- */
   useEffect(() => {
     const h = (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
@@ -1159,20 +1835,22 @@ function App() {
         {(!online || queueCount > 0) && (
           <div className="offline"><WifiOff size={16} />{!online ? 'Offline.' : 'Menyambungkan ulang.'} {queueCount > 0 ? `${queueCount} pesanan menunggu dikirim.` : 'Pesanan baru akan diantre.'}</div>
         )}
-        <header className="topbar">
-          <div className="topbar-left">
-            <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}><MenuIcon size={24} /></button>
-            <div><p className="eyebrow">{user.role === 'Admin' ? 'PANEL ADMIN' : user.role === 'Dapur' ? 'AREA DAPUR' : 'AREA KASIR'}</p><h2>{page}</h2></div>
-          </div>
-          <div className="top-right">
-            <span className="live-dot"></span>
-            <span className="hide-mobile">{online ? 'Supabase Online' : 'Offline'}</span>
-            <span className="date-pill">
-              <Clock size={14} />
-              <span className="hide-mobile">{new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
-            </span>
-          </div>
-        </header>
+        {page !== 'Antrian' && (
+          <header className="topbar">
+            <div className="topbar-left">
+              <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}><MenuIcon size={24} /></button>
+              <div><p className="eyebrow">{user.role === 'Admin' ? 'PANEL ADMIN' : user.role === 'Dapur' ? 'AREA DAPUR' : 'AREA KASIR'}</p><h2>{page}</h2></div>
+            </div>
+            <div className="top-right">
+              <span className="live-dot"></span>
+              <span className="hide-mobile">{online ? 'Supabase Online' : 'Offline'}</span>
+              <span className="date-pill">
+                <Clock size={14} />
+                <span className="hide-mobile">{new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+              </span>
+            </div>
+          </header>
+        )}
 
         {/* ================= PESANAN ================= */}
         {page === 'Pesanan' && user.role !== 'Dapur' && (
@@ -1481,86 +2159,321 @@ function App() {
           );
         })()}
 
-        {/* ================= ANTRIAN DAPUR ================= */}
+        {/* ================= ANTRIAN DAPUR (KDS PROFESIONAL) ================= */}
         {page === 'Antrian' && (() => {
           const act = todays.filter(o => statusOf(o) !== 'Diantar').sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
           const cnt = s => act.filter(o => statusOf(o) === s).length;
-          const shown = qTab === 'Semua' ? act : act.filter(o => statusOf(o) === qTab);
-          const mins = o => o.created_at ? Math.max(0, Math.round((Date.now() - Date.parse(o.created_at)) / 60000)) : null;
+
+          // Helper filter stasiun Makanan vs Minuman
+          const isDrinkItem = it => ['Minuman', 'Kopi', 'Soft Drink'].includes(it.category) || /(es|teh|jeruk|kopi|susu|jus|air|drink)/i.test(it.name);
+
+          // Filter status
+          let filtered = qTab === 'Semua' ? act : act.filter(o => statusOf(o) === qTab);
+
+          // Filter Pos/Stasiun
+          if (kdsStation === 'Makanan') {
+            filtered = filtered.filter(o => (o.items || []).some(it => !isDrinkItem(it)));
+          } else if (kdsStation === 'Minuman') {
+            filtered = filtered.filter(o => (o.items || []).some(it => isDrinkItem(it)));
+          }
+
+          // Live elapsed timer calculation (update setiap 1 detik via kdsTime)
+          const getElapsed = o => {
+            if (!o.created_at) return { mins: 0, text: '0m', alertLevel: 'safe' };
+            const diffSec = Math.max(0, Math.floor((kdsTime.getTime() - Date.parse(o.created_at)) / 1000));
+            const mins = Math.floor(diffSec / 60);
+            const secs = diffSec % 60;
+            const text = mins >= 60 ? `${Math.floor(mins / 60)}j ${mins % 60}m` : `${mins}m ${String(secs).padStart(2, '0')}s`;
+            const alertLevel = mins >= 20 ? 'critical' : mins >= 10 ? 'warning' : 'safe';
+            return { mins, secs, text, alertLevel };
+          };
+
+          // Ringkasan batch memasak (total item yang sedang menunggu/dimasak)
+          const cookingBatch = (() => {
+            const tally = {};
+            act.forEach(o => {
+              (o.items || []).forEach(it => {
+                const st = itemSt(it);
+                if (st === 'Baru' || st === 'Dimasak') {
+                  if (kdsStation === 'Makanan' && isDrinkItem(it)) return;
+                  if (kdsStation === 'Minuman' && !isDrinkItem(it)) return;
+                  const key = it.name;
+                  if (!tally[key]) tally[key] = { name: it.name, qty: 0, baru: 0, dimasak: 0 };
+                  tally[key].qty += (it.qty || 1);
+                  if (st === 'Baru') tally[key].baru += (it.qty || 1);
+                  else tally[key].dimasak += (it.qty || 1);
+                }
+              });
+            });
+            return Object.values(tally).sort((a, b) => b.qty - a.qty);
+          })();
+
           const isKitchen = user.role === 'Dapur';
           const isCashier = user.role === 'Kasir';
-          const tabs = isKitchen ? ['Semua', 'Baru', 'Dimasak', 'Siap'] : isCashier ? ['Siap'] : ['Semua', 'Baru', 'Dimasak', 'Siap'];
-          const visibleOrders = isCashier ? shown.filter(o => statusOf(o) === 'Siap') : shown;
+          const tabs = ['Semua', 'Baru', 'Dimasak', 'Siap'];
+
           return (
-            <div className="content">
-              <div className="panel" style={{ marginBottom: 14, padding: '14px 16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span style={{ width: 42, height: 42, borderRadius: 13, display: 'grid', placeItems: 'center', background: isKitchen ? '#fff7ed' : '#ecfdf5', color: isKitchen ? '#c2410c' : '#047857' }}>
-                    {isKitchen ? <ChefHat size={22} /> : <CheckCircle2 size={22} />}
-                  </span>
-                  <div>
-                    <b>{isKitchen ? 'Area kerja dapur' : isCashier ? 'Pesanan siap diantar' : 'Pemantauan antrian pesanan'}</b>
-                    <p className="muted" style={{ margin: '3px 0 0' }}>{isKitchen ? 'Kelola pesanan masuk sampai siap disajikan. Informasi harga dan pembayaran tidak ditampilkan.' : isCashier ? 'Pesanan dari dapur akan muncul di sini saat statusnya Siap.' : 'Pantau proses pesanan dari awal hingga selesai.'}</p>
+            <div className="kds-content">
+              <div className="kds-container">
+
+                {/* Header Bar KDS Profesional */}
+                <div className="kds-topbar">
+                  <div className="kds-topbar-left">
+                    <div className="kds-brand">
+                      <div className="kds-brand-ico"><ChefHat size={22} /></div>
+                      <div>
+                        <h2>KDS DAPUR ZAYGA</h2>
+                        <p>{act.length} pesanan aktif</p>
+                      </div>
+                    </div>
+                    <span className={'kds-live-tag ' + (realtimeConnected ? '' : 'reconnecting')}>
+                      <span className="kds-pulse-dot"></span>
+                      {realtimeConnected ? 'Real-time Sinkron' : 'Menghubungkan...'}
+                    </span>
+                  </div>
+
+                  <div className="kds-topbar-right">
+                    <div className="kds-clock" title="Waktu server/lokal">
+                      <Clock size={15} />
+                      {kdsTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </div>
+                    <button type="button" className="kds-action-btn" onClick={kitchenChime} title="Klik untuk menguji bunyi bel pesanan baru">
+                      <Bell size={15} /> <span className="btn-text-desktop">Tes </span>Bel
+                    </button>
+                    <button type="button" className="kds-action-btn" onClick={syncKdsNow} disabled={kdsSyncing} title="Sinkronkan data dengan database">
+                      <RefreshCw size={15} className={kdsSyncing ? 'anim-spin' : ''} /> <span className="btn-text-desktop">{kdsSyncing ? 'Menyinkronkan...' : 'Sinkron'}</span>
+                    </button>
+                    <button type="button" className="kds-action-btn" onClick={toggleKdsFullscreen} title="Layar penuh untuk monitor dapur">
+                      {kdsFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                      <span className="btn-text-desktop">{kdsFullscreen ? 'Kecilkan' : 'Layar Penuh'}</span>
+                    </button>
                   </div>
                 </div>
-              </div>
-              <div className="qq">
-                <div className="st-tabs" role="tablist">
-                  {tabs.map(t => (
-                    <button key={t} type="button" className={'st-tab ' + (qTab === t ? 'on' : '')} onClick={() => setQTab(t)}>{t} ({t === 'Semua' ? act.length : cnt(t)})</button>
-                  ))}
+
+                {/* Batch Memasak Cepat (Aggregated Cooking Helper) */}
+                {cookingBatch.length > 0 && (
+                  <div className="kds-batch-bar">
+                    <span className="kds-batch-title"><Flame size={16} /> Perlu Dimasak:</span>
+                    <div className="kds-batch-items">
+                      {cookingBatch.slice(0, 10).map((b, i) => (
+                        <span key={i} className="kds-batch-pill">
+                          <b>{b.qty}×</b> {b.name}
+                        </span>
+                      ))}
+                      {cookingBatch.length > 10 && (
+                        <span className="kds-batch-pill" style={{ background: 'var(--warn-s)', color: 'var(--warn)' }}>
+                          +{cookingBatch.length - 10} menu lain
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Filter Tab Status & Pos Kerja */}
+                <div className="kds-controls">
+                  <div className="kds-seg-scroll">
+                    {/* Filter Status */}
+                    <div className="kds-seg" role="tablist">
+                      {tabs.map(t => (
+                        <button
+                          key={t}
+                          type="button"
+                          className={(qTab === t ? 'on ' : '') + (qTab === t ? `tab-${t.toLowerCase()}` : '')}
+                          onClick={() => setQTab(t)}
+                        >
+                          {t} ({t === 'Semua' ? act.length : cnt(t)})
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Filter Stasiun / Pos Kerja */}
+                    <div className="kds-seg">
+                      {[['Semua', 'Semua Pos'], ['Makanan', '🍜 Makanan'], ['Minuman', '🥤 Minuman']].map(([stn, lbl]) => (
+                        <button
+                          key={stn}
+                          type="button"
+                          className={kdsStation === stn ? 'on' : ''}
+                          onClick={() => setKdsStation(stn)}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-                <div className="qq-grid">
-                  {visibleOrders.map(o => {
-                    const st = statusOf(o), m = mins(o);
+
+                {/* Grid Tiket Pesanan KDS */}
+                <div className="kds-grid">
+                  {filtered.map(o => {
+                    const st = statusOf(o);
+                    const { text: elapsedText, alertLevel } = getElapsed(o);
+                    const allItems = o?.items || [];
+                    const orderItems = allItems.filter(it => kdsStation === 'Semua' || (kdsStation === 'Makanan' ? !isDrinkItem(it) : isDrinkItem(it)));
+                    const siapItems = allItems.filter(i => itemSt(i) === 'Siap').length;
+                    const allItemsCount = allItems.length;
+
                     return (
-                      <div key={o.id} className={'qq-card ' + st}>
-                        <div className="qq-head">
-                          <div className="qq-meja">{String(o.location).length > 6 ? String(o.location).slice(0, 6) : o.location}</div>
-                          <div><b>{o.customer || 'Umum'} · {o.items.reduce((s, x) => s + x.qty, 0)} porsi</b><small>{o.time}{m != null ? ` · ${m} menit lalu` : ''} · {o.id}</small></div>
-                          <span className="dt-chip" style={{ background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span>
+                      <div key={o.id} className={'kds-ticket ' + st}>
+                        {/* Header Tiket: Meja & Timer */}
+                        <div className="kds-ticket-head">
+                          <div className="kds-meja-badge">
+                            {locLabel(o.location)}
+                          </div>
+                          <div className="kds-ticket-meta">
+                            <b>{o.customer || 'Pelanggan Umum'}</b>
+                            <small>{o.time} · {o.cashier ? `Kasir: ${o.cashier}` : o.id}</small>
+                          </div>
+                          <div className={'kds-timer ' + alertLevel} title={alertLevel === 'critical' ? 'Pesanan sudah lewat 20 menit!' : 'Waktu berjalan sejak pesanan dibuat'}>
+                            <Clock size={12} />
+                            {elapsedText}
+                          </div>
                         </div>
-                        <div className="qq-items">
-                          {o.items.map((it, i) => <div key={i}>{it.qty}× {it.name}{it.note && <small>» {it.note}</small>}</div>)}
-                          {o.notes && <small>Catatan: {o.notes}</small>}
+
+                        {/* Catatan Khusus Pesanan (Jika ada) */}
+                        {o.notes && (
+                          <div className="kds-ticket-notes">
+                            <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                            <span>CATATAN: {o.notes}</span>
+                          </div>
+                        )}
+
+                        {/* Daftar Item Menu */}
+                        <div className="kds-ticket-body">
+                          {orderItems.map((it, idx) => {
+                            const ist0 = itemSt(it);
+                            const actualIndex = allItems.indexOf(it);
+                            return (
+                              <div
+                                key={idx}
+                                className={'kds-item-row ' + (ist0 === 'Siap' ? 'item-siap' : ist0 === 'Dimasak' ? 'item-dimasak' : '')}
+                              >
+                                <div className="kds-item-info">
+                                  <div className="kds-item-name">
+                                    <span className="kds-item-qty">{it.qty}×</span>
+                                    <span className="kds-item-title">{it.name}</span>
+                                  </div>
+                                  {it.note && <span className="kds-item-note">» {it.note}</span>}
+                                </div>
+
+                                {/* Tombol Status Per Item yang Praktis & Rapi */}
+                                {isKitchen && ist0 !== 'Diantar' ? (
+                                  <div className="kds-item-actions">
+                                    {ist0 === 'Baru' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setItemStatus(o, actualIndex, 'Dimasak')}
+                                        className="kds-action-pill btn-start"
+                                        title="Klik untuk mulai memasak menu ini"
+                                      >
+                                        <Flame size={13} /> Masak
+                                      </button>
+                                    )}
+                                    {ist0 === 'Dimasak' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setItemStatus(o, actualIndex, 'Siap')}
+                                        className="kds-action-pill btn-ready"
+                                        title="Klik saat menu ini sudah siap disajikan"
+                                      >
+                                        <Check size={13} /> Siap ✓
+                                      </button>
+                                    )}
+                                    {ist0 === 'Siap' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setItemStatus(o, actualIndex, 'Dimasak')}
+                                        className="kds-action-pill badge-done"
+                                        title="Menu sudah siap (klik jika ingin mengembalikan ke Dimasak)"
+                                      >
+                                        <CheckCheck size={13} /> Siap ✓
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 800, background: STATUS_STYLE[ist0][0], color: STATUS_STYLE[ist0][1] }}>
+                                      {ist0}
+                                    </span>
+                                    {isCashier && ist0 === 'Siap' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setItemStatus(o, actualIndex, 'Diantar')}
+                                        style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '0.78rem', fontWeight: 700, background: '#16a34a', color: '#fff', cursor: 'pointer' }}
+                                      >
+                                        Antar
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div className="qq-act">
-                          {isKitchen && st === 'Dimasak' && <button type="button" className="ghost" onClick={() => setStatus(o, 'Baru')}>Kembalikan</button>}
-                          {isKitchen && st === 'Siap' && <button type="button" className="ghost" onClick={() => setStatus(o, 'Dimasak')}>Kembalikan ke dapur</button>}
-                          {isKitchen && st === 'Baru' && <button type="button" onClick={() => setStatus(o, 'Dimasak')}>Mulai masak</button>}
-                          {isKitchen && st === 'Dimasak' && <button type="button" onClick={() => setStatus(o, 'Siap')}>Tandai siap</button>}
-                          {isCashier && st === 'Siap' && <button type="button" onClick={() => setStatus(o, 'Diantar')}>Tandai sudah diantar</button>}
-                          {!isKitchen && !isCashier && st !== 'Diantar' && <button type="button" onClick={() => setStatus(o, STATUSES[STATUSES.indexOf(st) + 1])}>{NEXT_LABEL[st]}</button>}
-                          {!isKitchen && !isCashier && st !== 'Baru' && <button type="button" className="ghost" onClick={() => setStatus(o, STATUSES[STATUSES.indexOf(st) - 1])}>Mundur</button>}
-                          {!isKitchen && <button type="button" className="ghost" onClick={() => setSelectedOrder(o)}>Detail</button>}
+
+                        {/* Footer Aksi Massal Tiket */}
+                        <div className="kds-ticket-foot">
+                          {isKitchen && st === 'Baru' && (
+                            <button type="button" className="kds-btn-cook" onClick={() => setStatus(o, 'Dimasak')}>
+                              <Flame size={16} /> Mulai Masak Semua
+                            </button>
+                          )}
+                          {isKitchen && st === 'Dimasak' && (
+                            <>
+                              <button type="button" className="kds-btn-ready" onClick={() => setStatus(o, 'Siap')}>
+                                <CheckCheck size={16} /> Tandai Siap Semua
+                              </button>
+                              <button type="button" className="kds-btn-ghost" onClick={() => setStatus(o, 'Baru')}>
+                                Kembalikan ke Baru
+                              </button>
+                            </>
+                          )}
+                          {isKitchen && st === 'Siap' && (
+                            <button type="button" className="kds-btn-ghost" style={{ width: '100%' }} onClick={() => setStatus(o, 'Dimasak')}>
+                              Kembalikan ke Dimasak
+                            </button>
+                          )}
+
+                          {isCashier && st === 'Siap' && (
+                            <button type="button" className="kds-btn-ready" style={{ width: '100%' }} onClick={() => setStatus(o, 'Diantar')}>
+                              <CheckCircle2 size={16} /> Tandai Semua Diantar
+                            </button>
+                          )}
+                          {isCashier && st !== 'Siap' && siapItems > 0 && (
+                            <button type="button" className="kds-btn-ready" style={{ width: '100%' }} onClick={() => deliverReady(o)}>
+                              Antar {siapItems} Menu yang Siap
+                            </button>
+                          )}
+
+                          {!isKitchen && !isCashier && st !== 'Diantar' && (
+                            <button type="button" className="kds-btn-cook" style={{ width: '100%' }} onClick={() => setStatus(o, STATUSES[STATUSES.indexOf(st) + 1])}>
+                              {NEXT_LABEL[st]}
+                            </button>
+                          )}
+
+                          <button type="button" className="kds-btn-ghost" onClick={() => printOrder(o, 'kitchen')} title="Cetak ulang tiket dapur">
+                            <Printer size={15} /> Cetak
+                          </button>
                         </div>
                       </div>
                     );
                   })}
                 </div>
-                {!shown.length && <div className="st-empty">Tidak ada pesanan di antrian.</div>}
+
+                {!filtered.length && (
+                  <div className="ui-empty" style={{ padding: '48px 16px', background: 'var(--sf)', borderRadius: 'var(--r-lg)', border: '1px solid var(--line)' }}>
+                    <ChefHat size={42} color="var(--mut)" style={{ marginBottom: 10 }} />
+                    <h3 style={{ margin: '0 0 4px', fontSize: '1.1rem' }}>Semua Pesanan Selesai!</h3>
+                    <p style={{ margin: 0, color: 'var(--mut)', fontSize: '0.85rem' }}>Tidak ada pesanan aktif pada antrian saat ini. Layar akan otomatis berbunyi ketika ada pesanan baru dari kasir.</p>
+                  </div>
+                )}
               </div>
             </div>
           );
         })()}
 
-        {/* ================= DASHBOARD ================= */}
+        {/* ================= DASHBOARD (KHUSUS ADMIN) ================= */}
         {page === 'Dashboard' && user.role === 'Admin' && (
-          <div className="content">
-            <div className="stats-grid">
-              <Stat icon={<Wallet />} label="Penjualan hari ini" value={money(todays.reduce((s, o) => s + o.total, 0))} />
-              <Stat icon={<ClipboardList />} label="Transaksi hari ini" value={todays.length} />
-              <Stat icon={<Utensils />} label="Menu tersedia" value={items.filter(x => x.active && !x.sold_out).length} />
-              <Stat icon={<ShoppingCart />} label="Rata-rata transaksi" value={money(todays.length ? Math.round(todays.reduce((s, o) => s + o.total, 0) / todays.length) : 0)} />
-            </div>
-            <div className="panel">
-              <div className="section-head">
-                <div><h3>Transaksi terbaru</h3><p className="muted">Aktivitas pesanan terakhir.</p></div>
-                <button className="text-btn" onClick={() => setPage('Riwayat')}>Lihat semua</button>
-              </div>
-              <OrdersTable orders={orders.slice(0, 6)} printOrder={printOrder} onSelectOrder={setSelectedOrder} onDelete={deleteOrder} />
-            </div>
-          </div>
+          <DashboardView orders={orders} items={items} onOpenHistory={() => setPage('Riwayat')} onOpenQueue={() => setPage('Antrian')} />
         )}
 
         {/* ================= RIWAYAT ================= */}
@@ -1620,7 +2533,7 @@ function App() {
                     <div className="sh-row"><span>Tunai diterima</span><b>{money(sh.by.Tunai)}</b></div>
                     <div className="sh-row"><span>QRIS</span><b>{money(sh.by.QRIS)}</b></div>
                     <div className="sh-row"><span>Transfer</span><b>{money(sh.by.Transfer)}</b></div>
-                    <div className="sh-row"><span>Bon belum dibayar</span><b>{money(sh.bon)}</b></div>
+                    <div className="sh-row"><span>Bon belum bayar</span><b>{money(sh.bon)}</b></div>
                   </div>
 
                   <div className="st-card">
@@ -1676,32 +2589,6 @@ function App() {
           );
         })()}
 
-        {/* ================= LAPORAN ================= */}
-        {page === 'Laporan' && user.role === 'Admin' && (
-          <div className="content">
-            <div className="stats-grid">
-              <Stat icon={<Wallet />} label="Total penjualan" value={money(orders.reduce((s, o) => s + o.total, 0))} />
-              <Stat icon={<ClipboardList />} label="Total transaksi" value={orders.length} />
-              <Stat icon={<BarChart3 />} label="Penjualan hari ini" value={money(todays.reduce((s, o) => s + o.total, 0))} />
-              <Stat icon={<Clock />} label="Transaksi hari ini" value={todays.length} />
-            </div>
-            <div className="panel">
-              <h3>Ringkasan penjualan</h3>
-              <p className="muted">Rekap berdasarkan metode pembayaran.</p>
-              <div className="report-wrap">
-                <div className="report-row"><span>Sisa belum dibayar (semua bon)</span><b>{money(orders.reduce((s, o) => s + remainOf(o), 0))}</b></div>
-                <div className="report-row"><span>Total diskon diberikan</span><b>{money(orders.reduce((s, o) => s + (o.discount || 0), 0))}</b></div>
-                {['Tunai', 'QRIS', 'Transfer', 'Belum Bayar'].map(m => (
-                  <div key={m} className="report-row">
-                    <span>{m}</span>
-                    <b>{money(orders.filter(o => o.payment === m).reduce((s, o) => s + o.total, 0))}</b>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ================= KELOLA MENU ================= */}
         {page === 'Kelola Menu' && user.role === 'Admin' && (
           <div className="content">
@@ -1746,144 +2633,184 @@ function App() {
         )}
 
         {/* ================= PENGATURAN ================= */}
-        {page === 'Pengaturan' && user.role !== 'Dapur' && (() => {
+        {page === 'Pengaturan' && (() => {
           const isAdmin = user.role === 'Admin';
+          const isDapur = user.role === 'Dapur';
           const onl = printerStatus === 'Terhubung';
           const checking = printerStatus === 'Memeriksa...';
           const tabs = [
-            { id: 'printer', label: 'Printer', icon: Printer },
+            { id: 'printer', label: isDapur ? 'Notifikasi' : 'Printer & Notifikasi', icon: Printer },
             ...(isAdmin ? [{ id: 'akun', label: 'Karyawan', icon: Users }, { id: 'log', label: 'Log hapus', icon: ShieldAlert }] : []),
             { id: 'profil', label: 'Akun saya', icon: UserRound }
           ];
           const tab = tabs.some(t => t.id === setTab) ? setTab : 'printer';
           const serverDirty = serverDraft.trim() !== serverPrintUrl.trim();
+          const roleCls = r => r === 'Admin' ? 'admin' : r === 'Dapur' ? 'dapur' : 'kasir';
+          const notifPill = notifPerm === 'granted' ? ['ok', 'Diizinkan'] : notifPerm === 'denied' ? ['bad', 'Ditolak'] : ['wait', 'Belum diminta'];
+
           return (
             <div className="content">
-              <div className="st">
-                <div className="st-tabs" role="tablist">
-                  {tabs.map(t => (
-                    <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={'st-tab ' + (tab === t.id ? 'on' : '')} onClick={() => setSetTab(t.id)}>
-                      <t.icon size={17} /> {t.label}
-                    </button>
-                  ))}
+              <div className="sx">
+                <div className="sx-tabs" role="tablist">
+                  {tabs.map(t => {
+                    const TabIcon = t.icon;
+                    return (
+                      <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={'sx-tab ' + (tab === t.id ? 'on' : '')} onClick={() => setSetTab(t.id)}>
+                        <TabIcon size={17} /> {t.label}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {tab === 'printer' && (
-                  <div className="st-grid">
-                    <div className="st-card">
-                      <div className="st-card-head">
-                        <span className="st-ico"><Printer size={20} /></span>
-                        <div><h3>Status printer</h3><p>Cek apakah printer Bluetooth sudah siap mencetak lewat aplikasi Cleanter.</p></div>
-                      </div>
-                      <div className={'st-status ' + (onl ? 'ok' : checking ? '' : 'bad')}>
-                        <span className="st-dot"></span>
-                        <div className="st-status-text">
-                          <b>{onl ? 'Printer terhubung' : checking ? 'Memeriksa koneksi...' : 'Printer belum terhubung'}</b>
-                          <span>{printerName || 'Pastikan aplikasi Cleanter aktif dan Bluetooth printer menyala.'}</span>
+                  <div className="sx-grid">
+                    {!isDapur && (
+                      <div className="ui-card">
+                        <div className="sx-head">
+                          <span className="sx-ico"><Printer size={20} /></span>
+                          <div><h3>Status printer</h3><p>Cek apakah printer Bluetooth siap mencetak lewat Cleanter.</p></div>
+                        </div>
+                        <div className={'sx-status ' + (onl ? 'ok' : checking ? '' : 'bad')}>
+                          <span className="dot"></span>
+                          <div>
+                            <b>{onl ? 'Printer terhubung' : checking ? 'Memeriksa koneksi...' : 'Printer belum terhubung'}</b>
+                            <span className="t">{printerName || 'Pastikan aplikasi Cleanter aktif & Bluetooth menyala.'}</span>
+                          </div>
+                        </div>
+                        <div className="sx-kv" style={{ marginTop: 8 }}><span>Endpoint aktif</span><b>{activePrintUrl}</b></div>
+                        <div className="sx-actions">
+                          <button type="button" className="sx-btn" onClick={refreshPrinter}><RefreshCw size={16} /> Cek ulang</button>
+                          <button type="button" className="sx-btn primary" disabled={printing} onClick={testPrinter}><Printer size={16} /> {printing ? 'Mencetak...' : 'Cetak tes'}</button>
                         </div>
                       </div>
-                      <p className="st-active">Alamat yang dipakai sekarang: <b>{activePrintUrl}</b></p>
-                      <div className="st-actions">
-                        <button type="button" className="st-btn" onClick={refreshPrinter}><RefreshCw size={16} /> Cek ulang</button>
-                        <button type="button" className="st-btn primary" disabled={printing} onClick={testPrinter}><Printer size={16} /> {printing ? 'Mencetak...' : 'Cetak tes'}</button>
+                    )}
+
+                    <div className="ui-card" style={isDapur ? { gridColumn: '1 / -1' } : undefined}>
+                      <div className="sx-head">
+                        <span className="sx-ico amber"><Bell size={20} /></span>
+                        <div><h3>Notifikasi pesanan</h3><p>Suara dan pop-up saat ada pesanan baru atau menu siap diantar, meski layar redup atau membuka aplikasi lain.</p></div>
                       </div>
+                      <div className="sx-kv"><span>Izin browser</span><b><span className={'sx-pill ' + notifPill[0]}>{notifPill[1]}</span></b></div>
+                      <div className="sx-kv"><span>Koneksi realtime</span><b><span className={'sx-pill ' + (online ? 'ok' : 'bad')}>{online ? 'Online' : 'Offline'}</span></b></div>
+                      <div className="sx-actions">
+                        {notifPerm !== 'granted' && (
+                          <button type="button" className="sx-btn amber" onClick={requestNotificationPermission}><Bell size={16} /> Aktifkan notifikasi</button>
+                        )}
+                        <button type="button" className="sx-btn" onClick={testNotification}><Volume2 size={16} /> Tes suara</button>
+                      </div>
+                      {notifPerm === 'denied' && <p className="sx-hint" style={{ marginTop: 10 }}>Izin ditolak. Buka pengaturan situs di browser lalu ubah izin Notifikasi menjadi "Izinkan".</p>}
                     </div>
-                    <div className="st-card">
-                      <div className="st-card-head">
-                        <span className="st-ico"><Server size={20} /></span>
-                        <div><h3>Alamat printer</h3><p>Atur ke mana struk dan tiket dapur dikirim.</p></div>
-                      </div>
-                      <div className="st-field">
-                        <label className="st-label"><Server size={15} /> Server pusat (semua kasir)</label>
-                        <div className="st-row">
-                          <input className="st-input" inputMode="url" value={serverDraft} onChange={e => setServerDraft(e.target.value)} placeholder="http://192.168.1.100:9100" disabled={!isAdmin} />
-                          {isAdmin && <button type="button" className="st-btn primary" disabled={!serverDirty} onClick={saveServerPrintUrl}><Save size={16} /> Simpan</button>}
+
+                    {!isDapur && (
+                      <div className="ui-card sx-full">
+                        <div className="sx-head">
+                          <span className="sx-ico green"><Server size={20} /></span>
+                          <div><h3>Alamat printer (endpoint)</h3><p>Atur ke mana struk dan tiket dapur dikirim.</p></div>
                         </div>
-                        <span className="st-hint">{isAdmin ? 'Tersimpan di cloud, jadi otomatis dipakai semua perangkat kasir.' : 'Hanya Admin yang bisa mengubah alamat server pusat.'}</span>
+                        <div className="sx-field">
+                          <label className="sx-label"><Server size={15} /> Server pusat (semua kasir)</label>
+                          <div className="sx-row">
+                            <input className="sx-input" inputMode="url" value={serverDraft} onChange={e => setServerDraft(e.target.value)} placeholder="http://192.168.1.100:9100" disabled={!isAdmin} />
+                            {isAdmin && <button type="button" className="sx-btn primary" disabled={!serverDirty} onClick={saveServerPrintUrl}><Save size={16} /> Simpan</button>}
+                          </div>
+                          <span className="sx-hint">{isAdmin ? 'Tersimpan di cloud, otomatis disinkronkan ke semua perangkat kasir.' : 'Hanya Admin yang dapat mengubah alamat server pusat.'}</span>
+                        </div>
+                        <div className="sx-field">
+                          <label className="sx-label"><Smartphone size={15} /> Khusus perangkat ini (lokal)</label>
+                          <input className="sx-input" inputMode="url" value={localPrintUrl} onChange={handleLocalPrintUrlChange} placeholder="http://localhost:9100" />
+                          <span className="sx-hint">Hanya berlaku di perangkat ini. Jika server pusat diisi, server pusat diprioritaskan.</span>
+                        </div>
                       </div>
-                      <div className="st-field">
-                        <label className="st-label"><Smartphone size={15} /> Khusus perangkat ini</label>
-                        <input className="st-input" inputMode="url" value={localPrintUrl} onChange={handleLocalPrintUrlChange} placeholder="http://localhost:9100" />
-                        <span className="st-hint">Hanya berlaku di perangkat ini. Kalau server pusat terisi, alamat server pusat yang dipakai lebih dulu.</span>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 )}
 
                 {tab === 'akun' && isAdmin && (
-                  <div className="st-grid">
-                    <div className="st-card">
-                      <div className="st-card-head">
-                        <span className="st-ico"><UserPlus size={20} /></span>
-                        <div><h3>Tambah akun karyawan</h3><p>Buat akun baru supaya karyawan bisa masuk ke aplikasi.</p></div>
+                  <div className="sx-grid">
+                    <div className="ui-card">
+                      <div className="sx-head">
+                        <span className="sx-ico"><UserPlus size={20} /></span>
+                        <div><h3>Tambah akun karyawan</h3><p>Buat akun baru supaya karyawan bisa masuk.</p></div>
                       </div>
-                      <form onSubmit={handleCreateUser} className="st-form">
-                        <input className="st-input" autoComplete="off" placeholder="Username" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} />
-                        <div className="st-pass">
-                          <input className="st-input" autoComplete="new-password" type={showPwd ? 'text' : 'password'} placeholder="Password" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
-                          <button type="button" className="st-eye" onClick={() => setShowPwd(v => !v)} aria-label={showPwd ? 'Sembunyikan password' : 'Tampilkan password'}>
-                            {showPwd ? <EyeOff size={18} /> : <Eye size={18} />}
-                          </button>
+                      <form onSubmit={handleCreateUser}>
+                        <div className="sx-field">
+                          <label className="sx-label">Username</label>
+                          <input className="sx-input" autoComplete="off" placeholder="Username" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} />
                         </div>
-                        <div className="st-seg full">
+                        <div className="sx-field">
+                          <label className="sx-label">Password</label>
+                          <div className="sx-pass">
+                            <input className="sx-input" autoComplete="new-password" type={showPwd ? 'text' : 'password'} placeholder="Password" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
+                            <button type="button" className="sx-eye" onClick={() => setShowPwd(v => !v)} aria-label={showPwd ? 'Sembunyikan password' : 'Tampilkan password'}>
+                              {showPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="sx-seg">
                           {['Kasir', 'Dapur', 'Admin'].map(r => <button key={r} type="button" className={newUser.role === r ? 'on' : ''} onClick={() => setNewUser({ ...newUser, role: r })}>{r}</button>)}
                         </div>
-                        <button className="st-btn primary full" type="submit"><UserPlus size={16} /> Tambah akun</button>
+                        <button className="sx-btn primary" style={{ width: '100%' }} type="submit"><UserPlus size={16} /> Tambah akun</button>
                       </form>
                     </div>
-                    <div className="st-card">
-                      <div className="st-card-head">
-                        <span className="st-ico"><Users size={20} /></span>
+                    <div className="ui-card">
+                      <div className="sx-head">
+                        <span className="sx-ico green"><Users size={20} /></span>
                         <div><h3>Daftar akun</h3><p>{usersList.length} akun terdaftar.</p></div>
                       </div>
-                      <div className="st-list">
+                      <div className="sx-list">
                         {usersList.map(u => (
-                          <div className="st-li" key={u.username}>
-                            <div className="st-av">{u.username[0].toUpperCase()}</div>
-                            <div className="st-li-main">
+                          <div className="sx-li" key={u.username}>
+                            <div className="sx-av">{u.username[0].toUpperCase()}</div>
+                            <div className="sx-li-main">
                               <b>{u.username}</b>
-                              <small><span className={'st-badge ' + (u.role === 'Admin' ? 'admin' : '')}>{u.role}</span></small>
+                              <small><span className={'sx-badge ' + roleCls(u.role)}>{u.role}</span></small>
                             </div>
                             {u.username.toLowerCase() !== 'admin'
-                              ? <button type="button" className="st-del" onClick={() => handleDeleteUser(u.username)}><Trash2 size={14} /> Hapus</button>
-                              : <span className="st-main-tag">Akun utama</span>}
+                              ? <button type="button" className="sx-del" onClick={() => handleDeleteUser(u.username)}><Trash2 size={14} /> Hapus</button>
+                              : <span className="sx-tag">Akun utama</span>}
                           </div>
                         ))}
-                        {!usersList.length && <div className="st-empty">Belum ada akun.</div>}
+                        {!usersList.length && <div className="ui-empty">Belum ada akun.</div>}
                       </div>
                     </div>
                   </div>
                 )}
 
                 {tab === 'log' && isAdmin && (
-                  <div className="st-card">
-                    <div className="st-card-head">
-                      <span className="st-ico red"><ShieldAlert size={20} /></span>
+                  <div className="ui-card">
+                    <div className="sx-head">
+                      <span className="sx-ico red"><ShieldAlert size={20} /></span>
                       <div><h3>Log riwayat yang dihapus</h3><p>Catatan siapa yang menghapus transaksi dan kapan.</p></div>
                     </div>
-                    <div className="st-list">
+                    <div className="sx-list">
                       {clearLogs.map(log => (
-                        <div className="st-li" key={log.id}>
-                          <div className="st-av">{String(log.who || '?')[0].toUpperCase()}</div>
-                          <div className="st-li-main">
-                            <b>{log.who} <span className={'st-badge ' + (log.role === 'Admin' ? 'admin' : '')} style={{ marginLeft: 4 }}>{log.role}</span></b>
+                        <div className="sx-li" key={log.id}>
+                          <div className="sx-av">{String(log.who || '?')[0].toUpperCase()}</div>
+                          <div className="sx-li-main">
+                            <b>{log.who} <span className={'sx-badge ' + roleCls(log.role)} style={{ marginLeft: 4 }}>{log.role}</span></b>
                             <small>{log.time}</small>
                           </div>
-                          <span className="st-log-n">{log.count} transaksi</span>
+                          <span className="sx-count">{log.count} transaksi</span>
                         </div>
                       ))}
-                      {!clearLogs.length && <div className="st-empty">Belum ada riwayat yang dihapus.</div>}
+                      {!clearLogs.length && <div className="ui-empty">Belum ada riwayat yang dihapus.</div>}
                     </div>
                   </div>
                 )}
 
                 {tab === 'profil' && (
-                  <div className="st-card">
-                    <div className="st-me">
-                      <div className="st-av">{user.username[0].toUpperCase()}</div>
-                      <div><b>{user.username}</b><small>Masuk sebagai {user.role}</small></div>
+                  <div className="ui-card" style={{ maxWidth: 520, width: '100%', margin: '0 auto' }}>
+                    <div className="sx-me">
+                      <div className="big">{user.username[0].toUpperCase()}</div>
+                      <b>{user.username}</b>
+                      <span className={'sx-badge ' + roleCls(user.role)}>{user.role}</span>
                     </div>
-                    <button type="button" className="st-btn danger st-out" onClick={logoutNow}><LogOut size={16} /> Keluar dari aplikasi</button>
+                    <div className="sx-kv"><span>Status koneksi</span><b><span className={'sx-pill ' + (online ? 'ok' : 'bad')}>{online ? 'Online' : 'Offline'}</span></b></div>
+                    <div className="sx-kv"><span>Pesanan menunggu kirim</span><b>{queueCount}</b></div>
+                    <div className="sx-kv"><span>Notifikasi</span><b><span className={'sx-pill ' + notifPill[0]}>{notifPill[1]}</span></b></div>
+                    <div className="sx-actions">
+                      <button type="button" className="sx-btn danger" onClick={logoutNow}><LogOut size={16} /> Keluar dari aplikasi</button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1892,28 +2819,42 @@ function App() {
         })()}
       </main>
 
-      {/* navigasi bawah (mobile) */}
       <nav className="bn">
-        {['Pesanan', 'Denah', 'Antrian', 'Riwayat'].map(l => {
-          const it = visibleNavItems.find(n => n[1] === l);
-          if (!it) return null;
-          const Icon = it[0];
-          return (
-            <button key={l} type="button" className={page === l ? 'on' : ''} onClick={() => handlePageChange(l)}>
-              <Icon size={20} />{l}
-              {l === 'Antrian' && siapCount > 0 && <i>{siapCount}</i>}
-              {l === 'Pesanan' && cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
+        {user.role === 'Dapur' ? (
+          <>
+            <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
+              <ChefHat size={20} />Antrian
+              {siapCount > 0 && <i>{siapCount}</i>}
             </button>
-          );
-        })}
-        <button type="button" onClick={() => setSidebarOpen(true)}><MenuIcon size={20} />Lainnya</button>
+            <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
+              <Settings size={20} />Pengaturan
+            </button>
+          </>
+        ) : (
+          <>
+            {['Pesanan', 'Denah', 'Antrian', 'Riwayat'].map(l => {
+              const it = visibleNavItems.find(n => n[1] === l);
+              if (!it) return null;
+              const Icon = it[0];
+              return (
+                <button key={l} type="button" className={page === l ? 'on' : ''} onClick={() => handlePageChange(l)}>
+                  <Icon size={20} />{l}
+                  {l === 'Antrian' && siapCount > 0 && <i>{siapCount}</i>}
+                  {l === 'Pesanan' && cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
+                </button>
+              );
+            })}
+            <button type="button" onClick={() => setSidebarOpen(true)}><MenuIcon size={20} />Lainnya</button>
+          </>
+        )}
       </nav>
 
       {/* ================= SHEET: DETAIL BON ================= */}
       {selectedOrder && user.role !== 'Dapur' && (() => {
         const o = selectedOrder;
         const remain = remainOf(o), settled = settledOf(o), st = statusOf(o);
-        const qtyTotal = o.items.reduce((sum, x) => sum + x.qty, 0);
+        const orderItems = o?.items || [];
+        const qtyTotal = orderItems.reduce((sum, x) => sum + x.qty, 0);
         const isAdmin = user.role === 'Admin';
         return (
           <div className="dt-overlay" onClick={() => setSelectedOrder(null)}>
@@ -1941,15 +2882,20 @@ function App() {
                     <div><span>Metode bayar</span><b>{o.payment}</b></div>
                     <div><span>Jumlah item</span><b>{qtyTotal} porsi</b></div>
                   </div>
-                  <div className="dt-sec"><span>Daftar item</span><small>{o.items.length} jenis</small></div>
+                  <div className="dt-sec"><span>Daftar item</span><small>{orderItems.length} jenis</small></div>
                   <div>
-                    {o.items.map((it, idx) => (
+                    {orderItems.map((it, idx) => (
                       <div className="dt-item" key={idx}>
                         <div className="dt-qty">{it.qty}×</div>
                         <div>
                           <b>{it.name}</b>
                           <small>{money(it.price)} / porsi</small>
                           {it.note && <small style={{ color: '#b45309', fontWeight: 600 }}>Catatan: {it.note}</small>}
+                          <div style={{ marginTop: '4px' }}>
+                            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: STATUS_STYLE[it.item_status || 'Baru'][0], color: STATUS_STYLE[it.item_status || 'Baru'][1], fontWeight: 700 }}>
+                              Status Item: {it.item_status || 'Baru'}
+                            </span>
+                          </div>
                         </div>
                         <strong>{money(it.qty * it.price)}</strong>
                       </div>
@@ -1968,7 +2914,7 @@ function App() {
                   <div className="dt-sum">
                     {((o.discount || 0) > 0 || (o.rounding || 0) > 0) && (
                       <>
-                        <div className="dt-row"><span>Subtotal</span><b>{money(sumItems(o.items))}</b></div>
+                        <div className="dt-row"><span>Subtotal</span><b>{money(sumItems(orderItems))}</b></div>
                         {o.discount > 0 && <div className="dt-row"><span>Diskon</span><b>−{money(o.discount)}</b></div>}
                         {o.rounding > 0 && <div className="dt-row"><span>Pembulatan</span><b>+{money(o.rounding)}</b></div>}
                       </>
@@ -1993,7 +2939,7 @@ function App() {
                   <button className="dt-tile" disabled={printing} onClick={() => printOrder(o, 'customer')}><i style={{ background: o.customer_printed ? '#16a34a' : '#eab308' }}></i><Printer size={18} /> Struk Kasir (Manual)</button>
                   <button className="dt-tile" onClick={() => startAddToOrder(o)}><Plus size={18} /> Tambah</button>
                   <button className="dt-tile" onClick={() => openMove(o)}><ArrowRightLeft size={18} /> Pindah</button>
-                  <button className="dt-tile" disabled={o.items.length < 1 || (o.items.length === 1 && o.items[0].qty < 2)} onClick={() => openSplit(o)}><Scissors size={18} /> Pisah</button>
+                  <button className="dt-tile" disabled={orderItems.length < 1 || (orderItems.length === 1 && orderItems[0].qty < 2)} onClick={() => openSplit(o)}><Scissors size={18} /> Pisah</button>
                   <button className="dt-tile" onClick={() => reorder(o)}><RotateCcw size={18} /> Pesan lagi</button>
                   {isAdmin && <button className="dt-tile del" onClick={() => deleteOrder(o)}><Trash2 size={18} /> Hapus</button>}
                 </div>
@@ -2017,11 +2963,12 @@ function App() {
               <div className="po-sheet-body">
                 {list.map(o => {
                   const st = statusOf(o);
+                  const orderItems = o?.items || [];
                   return (
                     <div className="mv-card" key={o.id}>
                       <div>
                         <b>{o.id} · {o.customer || 'Umum'}</b>
-                        <small>{o.time} · {o.items.reduce((s, x) => s + x.qty, 0)} item · {money(o.total)}</small>
+                        <small>{o.time} · {orderItems.reduce((s, x) => s + x.qty, 0)} item · {money(o.total)}</small>
                         <span className="tag" style={{ background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span>
                         {remainOf(o) > 0 ? <span className="tag" style={{ background: '#fee2e2', color: '#991b1b' }}>Sisa {money(remainOf(o))}</span> : <span className="tag" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}
                       </div>
@@ -2108,16 +3055,19 @@ function App() {
                 {dest && !isSame && candidates.length > 0 && (
                   <>
                     <span className="mv-label">Meja {dest} sudah punya {candidates.length} bon hari ini. Gabungkan?</span>
-                    {candidates.map(c => (
-                      <div className="mv-card" key={c.id}>
-                        <div>
-                          <b>{c.id} · {c.customer || 'Umum'}</b>
-                          <small>{c.time} · {c.items.reduce((sum, x) => sum + x.qty, 0)} item · {money(c.total)}</small>
-                          {remainOf(c) > 0 ? <span className="tag" style={{ background: '#fee2e2', color: '#991b1b' }}>Sisa {money(remainOf(c))}</span> : <span className="tag" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}
+                    {candidates.map(c => {
+                      const cItems = c?.items || [];
+                      return (
+                        <div className="mv-card" key={c.id}>
+                          <div>
+                            <b>{c.id} · {c.customer || 'Umum'}</b>
+                            <small>{c.time} · {cItems.reduce((sum, x) => sum + x.qty, 0)} item · {money(c.total)}</small>
+                            {remainOf(c) > 0 ? <span className="tag" style={{ background: '#fee2e2', color: '#991b1b' }}>Sisa {money(remainOf(c))}</span> : <span className="tag" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}
+                          </div>
+                          <button className="mv-btn" disabled={moveBusy} onClick={() => doMerge(o, c)}>Gabung ke sini</button>
                         </div>
-                        <button className="mv-btn" disabled={moveBusy} onClick={() => doMerge(o, c)}>Gabung ke sini</button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </>
                 )}
                 {dest && !isSame && (
@@ -2135,7 +3085,8 @@ function App() {
       {/* ================= SHEET: PISAH BON ================= */}
       {splitOrder && (() => {
         const o = orders.find(x => x.id === splitOrder.id) || splitOrder;
-        const movedItems = o.items.map((it, i) => ({ ...it, qty: Math.min(splitQty[i] || 0, it.qty) })).filter(it => it.qty > 0);
+        const orderItems = o?.items || [];
+        const movedItems = orderItems.map((it, i) => ({ ...it, qty: Math.min(splitQty[i] || 0, it.qty) })).filter(it => it.qty > 0);
         const movedTotal = sumItems(movedItems);
         return (
           <div className="mv-overlay">
@@ -2147,7 +3098,7 @@ function App() {
               </div>
               <div className="mv-body">
                 <span className="mv-label" style={{ marginTop: 0 }}>Pilih porsi yang dipindah ke bon baru</span>
-                {o.items.map((it, i) => (
+                {orderItems.map((it, i) => (
                   <div className="sp-row" key={i}>
                     <div><b>{it.name}</b><small>{it.qty} porsi · {money(it.price)}</small></div>
                     <div className="po-step">
@@ -2306,66 +3257,6 @@ function App() {
       })()}
 
       {toastEl}
-    </div>
-  );
-}
-
-function Stat({ icon, label, value }) {
-  return (
-    <div className="stat-card">
-      <span className="stat-icon">{icon}</span>
-      <span className="stat-label">{label}</span>
-      <b className="stat-value">{value}</b>
-    </div>
-  );
-}
-
-function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th><th>Status</th><th>Cetak</th><th>Pelanggan</th><th>Lokasi</th><th>Waktu</th><th>Total</th><th>Metode</th><th>Aksi / Cetak</th>
-          </tr>
-        </thead>
-        <tbody>
-          {orders.map(o => {
-            const isFullyPrinted = o.kitchen_printed && o.customer_printed;
-            const st = statusOf(o);
-            return (
-              <tr key={o.id} style={{ cursor: 'pointer', background: isFullyPrinted ? 'transparent' : '#fefce8' }} onClick={() => onSelectOrder(o)}>
-                <td data-label="ID"><b className="mono">{o.id}</b>{o._queued && <span className="cat-badge" style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e' }}>Antre</span>}</td>
-                <td data-label="Status"><span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span></td>
-                <td data-label="Cetak">
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.kitchen_printed ? '#dcfce7' : '#fef08a', color: o.kitchen_printed ? '#166534' : '#854d0e' }}>{o.kitchen_printed ? 'Dap✓' : 'Dap!'}</span>
-                    <span style={{ padding: '3px 6px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600, background: o.customer_printed ? '#dcfce7' : '#fef08a', color: o.customer_printed ? '#166534' : '#854d0e' }}>{o.customer_printed ? 'Kas✓' : 'Kas!'}</span>
-                  </div>
-                </td>
-                <td data-label="Pelanggan">{o.customer || '-'}</td>
-                <td data-label="Lokasi"><span className="cat-badge">{o.location}</span></td>
-                <td data-label="Waktu"><div className="time-cell"><span>{o.date}</span><small>{o.time}</small></div></td>
-                <td data-label="Total"><b>{money(o.total)}</b></td>
-                <td data-label="Metode">
-                  <span className={remainOf(o) > 0 ? 'cat-badge' : ''} style={remainOf(o) > 0 ? { background: '#fee2e2', color: '#991b1b' } : {}}>
-                    {remainOf(o) > 0 ? (o.payment === 'Belum Bayar' ? 'Belum Bayar' : `${o.payment} · Sisa ${money(remainOf(o))}`) : o.payment}
-                  </span>
-                </td>
-                <td onClick={e => e.stopPropagation()}>
-                  <div className="print-actions">
-                    <button className="print-btn" onClick={() => onSelectOrder(o)} title="Lihat Detail"><Eye size={14} /> Detail</button>
-                    <button className="print-btn" onClick={() => printOrder(o, 'kitchen')}><Printer size={14} /> Dapur</button>
-                    <button className="print-btn" onClick={() => printOrder(o, 'customer')}><Printer size={14} /> Struk Kasir</button>
-                    {onDelete && <button className="print-btn" title="Hapus transaksi" style={{ background: '#fee2e2', color: '#991b1b', borderColor: '#fca5a5' }} onClick={() => onDelete(o)}><Trash2 size={14} /> Hapus</button>}
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-          {orders.length === 0 && <tr><td colSpan="9" className="empty-table" style={{ textAlign: 'center', padding: '2rem' }}>Belum ada transaksi.</td></tr>}
-        </tbody>
-      </table>
     </div>
   );
 }

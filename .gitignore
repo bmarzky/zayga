@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 .env.local
+
+# Local HTTPS certificates
+certs/
+vite.config.js

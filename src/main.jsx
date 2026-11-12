@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio, List, Rows3 } from 'lucide-react';
 import { supabase } from './supabase';
 import './app.css';
 // import './dash.css';
@@ -32,9 +32,11 @@ const deriveStatus = its => {
   if (its.some(i => ['Dimasak', 'Siap', 'Diantar'].includes(itemSt(i)))) return 'Dimasak';
   return 'Baru';
 };
-const syncItems = (its, st) => (its || []).map(i => {
+// [FIX #8] `force` dipakai saat Admin memundurkan pesanan dari "Diantar":
+// semua item ikut dikembalikan, supaya status pesanan dan status item tidak saling bertentangan.
+const syncItems = (its, st, force = false) => (its || []).map(i => {
   if (st === 'Diantar') return { ...i, item_status: 'Diantar' };
-  if (itemSt(i) === 'Diantar') return i;
+  if (!force && itemSt(i) === 'Diantar') return i;
   return { ...i, item_status: st };
 });
 
@@ -46,7 +48,49 @@ const baseName = n => String(n || '').replace(/ \((Panas|Hangat|Dingin)\)/, '').
 const nowTime = () => new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 const ledger = (m, a, by) => ({ m, a, by, t: new Date().toISOString(), d: new Date().toLocaleDateString('en-CA') });
 const isNetErr = e => !navigator.onLine || /fetch|network|failed to|timeout|load failed/i.test(e?.message || '');
+const isDupErr = e => /duplicate|23505/i.test(String(e?.message || '') + String(e?.code || ''));
 const buzz = (ms = 25) => { try { navigator.vibrate && navigator.vibrate(ms) } catch {} };
+
+// [FIX #4] ID order: potongan waktu (base36) + 3 karakter acak kriptografis.
+// Siklus waktu ~25 hari + 46.656 kemungkinan acak, jadi bentrok antar perangkat nyaris mustahil.
+const genOrderId = () => {
+  const t = Date.now().toString(36).toUpperCase().slice(-6);
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let r = '';
+  try {
+    const a = new Uint8Array(3);
+    crypto.getRandomValues(a);
+    a.forEach(n => { r += chars[n % chars.length]; });
+  } catch {
+    for (let i = 0; i < 3; i++) r += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return 'ZG' + t + r;
+};
+
+// Gabungkan hasil server dengan pesanan yang masih menunggu di antrean offline
+const withQueue = (data) => {
+  const q = read('z_queue', []);
+  return [...q.filter(x => !data.some(d => d.id === x.id)), ...data];
+};
+
+// [FIX #6] Hitung ulang bon setelah ada item tambahan.
+// Diskon persen dihitung ulang dari subtotal baru; diskon rupiah tetap (dibatasi subtotal).
+const computeAddition = (base, addCart) => {
+  const merged = [...(base.items || [])];
+  for (const c of addCart) {
+    const i = merged.findIndex(x => x.id === c.id && itemSt(x) === 'Baru');
+    if (i > -1) merged[i] = { ...merged[i], qty: merged[i].qty + c.qty };
+    else merged.push({ ...c, item_status: 'Baru' });
+  }
+  const sub = sumItems(merged);
+  let disc = base.discount || 0;
+  if (disc > 0) {
+    if (base.discount_type === 'pct') disc = Math.min(sub, Math.round(sub * Math.min(Number(base.discount_value) || 0, 100) / 100));
+    else disc = Math.min(disc, sub);
+  }
+  const newTotal = calcTotal(merged, disc, base.rounding);
+  return { merged, disc, newTotal, addDue: Math.max(0, newTotal - (base.total || 0)) };
+};
 
 let audioCtx;
 const beep = (freq = 880, dur = 0.2, times = 2) => {
@@ -715,6 +759,9 @@ export default function App() {
   const [kdsFullscreen, setKdsFullscreen] = useState(false);
   const [kdsTime, setKdsTime] = useState(() => new Date());
   const [realtimeConnected, setRealtimeConnected] = useState(true);
+  const [adminQueueMode, setAdminQueueMode] = useState(() => read('z_admin_queue_mode', 'dapur')); // 'dapur' | 'kasir'
+  const [cashierTab, setCashierTab] = useState('Siap'); // 'Siap' | 'Dimasak' | 'Baru' | 'Semua'
+  const [cashierLayout, setCashierLayout] = useState(() => read('z_cashier_layout', 'cards')); // 'cards' | 'compact'
   const [histFilter, setHistFilter] = useState('Hari ini');
   const [shiftWho, setShiftWho] = useState('');
   const [shiftForm, setShiftForm] = useState({ opening: '', counted: '', note: '' });
@@ -763,22 +810,27 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), ms);
   };
 
+  // [FIX #8] Catatan audit: siapa mengubah apa. Gagal mencatat tidak boleh menghalangi kerja kasir.
+  const logAudit = (orderId, action, detail = {}) => {
+    const u = userRef.current;
+    supabase.from('order_audit')
+      .insert([{ order_id: orderId, action, detail, by_user: u?.username || null, role: u?.role || null }])
+      .then(({ error }) => { if (error) console.error('Audit gagal dicatat:', error.message); });
+  };
+
   const fetchData = async () => {
     try {
       const [resUsers, resMenu, resOrders, resLogs, resSettings, resShifts] = await Promise.all([
         supabase.from('users').select('*'),
         supabase.from('menu_items').select('*'),
-        supabase.from('orders').select('*').order('created_at', { ascending: false }),
+        supabase.from('orders').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
         supabase.from('clear_logs').select('*'),
         supabase.from('app_settings').select('*').eq('key', 'print_url').maybeSingle(),
         supabase.from('shift_closings').select('*').order('id', { ascending: false }).limit(60)
       ]);
       if (resUsers.data) setUsersList(resUsers.data);
       if (resMenu.data) setItems(resMenu.data);
-      if (resOrders.data) {
-        const q = read('z_queue', []);
-        setOrders([...q.filter(x => !resOrders.data.some(d => d.id === x.id)), ...resOrders.data]);
-      }
+      if (resOrders.data) setOrders(withQueue(resOrders.data));
       if (resLogs.data) setClearLogs(resLogs.data);
       if (resShifts.data) setShifts(resShifts.data);
       if (resSettings.data && resSettings.data.value) setServerPrintUrl(resSettings.data.value);
@@ -788,32 +840,49 @@ export default function App() {
   };
 
   const queueOrder = (o) => { const q = read('z_queue', []); q.push(o); write('z_queue', q); setQueueCount(q.length); };
+
+  // [FIX #5] Antrean offline:
+  //  - Error duplikat TIDAK langsung dianggap terkirim. Dicek dulu apakah baris di server memang
+  //    pesanan yang sama (created_at + kasir sama). Kalau beda, ID diganti baru lalu dicoba lagi.
+  //  - Stok dikurangi untuk setiap pesanan antrean yang berhasil terkirim.
   const flushQueue = async () => {
     const q = read('z_queue', []);
     if (!q.length || flushing.current || !navigator.onLine) return;
     flushing.current = true;
     const left = [];
     const readyToPrint = [];
+    const idChanges = {};
     let sent = 0;
     for (const o of q) {
-      const { _queued, ...row } = o;
-      const { error } = await supabase.from('orders').insert([row]);
-      if (error && !/duplicate|23505/i.test(String(error.message) + String(error.code || ''))) {
-        left.push(o);
-      } else {
+      const { _queued, ...row0 } = o;
+      let row = row0, ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+        const { error } = await supabase.from('orders').insert([row]);
+        if (!error) { ok = true; break; }
+        if (isDupErr(error)) {
+          const { data: ex, error: exErr } = await supabase.from('orders').select('id,created_at,cashier').eq('id', row.id).maybeSingle();
+          if (exErr) break; // belum bisa memastikan, biarkan di antrean
+          if (ex && ex.cashier === row.cashier && Date.parse(ex.created_at) === Date.parse(row.created_at)) { ok = true; break; } // memang pesanan yang sama
+          row = { ...row, id: genOrderId() }; // ID bentrok dengan pesanan lain: ganti ID
+          continue;
+        }
+        break; // error lain: biarkan di antrean
+      }
+      if (ok) {
         sent++;
         readyToPrint.push(row);
-      }
+        if (row.id !== row0.id) idChanges[row0.id] = row.id;
+        consumeStock(row.items || []);
+      } else left.push(o);
     }
     write('z_queue', left); setQueueCount(left.length); flushing.current = false;
     if (sent) {
       flash(`${sent} pesanan offline berhasil terkirim. Mencetak tiket dapur...`);
       setOrders(prev => prev.map(x => {
-        if (x._queued && !left.some(l => l.id === x.id)) {
-          const { _queued, ...r } = x;
-          return r;
-        }
-        return x;
+        if (!x._queued) return x;
+        if (left.some(l => l.id === x.id)) return x;
+        const { _queued, ...r } = x;
+        return idChanges[x.id] ? { ...r, id: idChanges[x.id] } : r;
       }));
       for (const order of readyToPrint) await autoPrint(order);
     }
@@ -840,9 +909,11 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, p => {
         if (p.eventType === 'INSERT') {
           const n = p.new;
+          if (n.deleted_at) return;
           const exists = ordersRef.current.some(x => x.id === n.id);
           setOrders(o => o.some(x => x.id === n.id) ? o : [n, ...o]);
 
+          // Notifikasi pesanan baru hanya untuk Dapur & Admin (kasir tidak perlu bunyi untuk pesanan yang ia buat sendiri / pesanan baru)
           if (!exists && n.cashier !== userRef.current?.username) {
             if (userRef.current?.role === 'Dapur') {
               kitchenChime();
@@ -868,6 +939,11 @@ export default function App() {
           }
         } else if (p.eventType === 'UPDATE') {
           const n = p.new;
+          // [FIX #2] Soft delete datang sebagai UPDATE: keluarkan dari daftar lokal
+          if (n.deleted_at) {
+            setOrders(o => o.filter(x => x.id !== n.id));
+            return;
+          }
           const prev = ordersRef.current.find(x => x.id === n.id);
           setOrders(o => o.map(x => x.id === n.id ? { ...x, ...n } : x));
 
@@ -920,7 +996,7 @@ export default function App() {
     const pollId = setInterval(async () => {
       if (!navigator.onLine) return;
       try {
-        const { data } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+        const { data } = await supabase.from('orders').select('*').is('deleted_at', null).order('created_at', { ascending: false });
         if (data) {
           setOrders(prev => {
             const prevMap = new Map(prev.map(p => [p.id, p]));
@@ -954,7 +1030,8 @@ export default function App() {
               }
             }
 
-            return data;
+            // Pesanan yang masih di antrean offline tidak boleh hilang dari tampilan
+            return withQueue(data);
           });
           setRealtimeConnected(true);
         }
@@ -978,6 +1055,8 @@ export default function App() {
 
   useEffect(() => { setServerDraft(serverPrintUrl); }, [serverPrintUrl]);
   const activePrintUrl = serverPrintUrl.trim() || localPrintUrl.trim() || 'http://localhost:9100';
+  // Ref agar fungsi yang dipanggil dari effect lama (antrean offline) tidak memakai URL basi
+  const printUrlRef = useRef(activePrintUrl); printUrlRef.current = activePrintUrl;
 
   useEffect(() => { if (page === 'Pengaturan') refreshPrinter(); }, [page, activePrintUrl]);
   useEffect(() => { if (paid === '') setPaidRaw(''); }, [paid]);
@@ -1046,7 +1125,14 @@ export default function App() {
   const netTotal = subtotal - discAmt;
   const roundAmt = (showPay && !settling && !addingToOrder && payment === 'Tunai' && roundTo) ? Math.ceil(netTotal / roundTo) * roundTo - netTotal : 0;
   const grand = netTotal + roundAmt;
-  const payDue = settling ? remainOf(settling) : addingToOrder ? subtotal : grand;
+
+  // [FIX #6] Saat menambah item ke bon lama, tagihan tambahan = total baru - total lama
+  // (sudah memperhitungkan diskon persen yang menyesuaikan subtotal baru).
+  const additionBase = addingToOrder ? (orders.find(o => o.id === addingToOrder.id) || addingToOrder) : null;
+  const additionCalc = additionBase ? computeAddition(additionBase, cart) : null;
+  const addDue = additionCalc ? additionCalc.addDue : 0;
+  const payDue = settling ? remainOf(settling) : addingToOrder ? addDue : grand;
+  const shownTotal = addingToOrder ? addDue : netTotal;
 
   const qtyOf = (item) => cart.filter(x => {
     const id = String(x.id), base = String(item.id);
@@ -1162,16 +1248,21 @@ export default function App() {
     flash(patch.sold_out ? `${item.name} ditandai habis.` : `Stok ${item.name} diperbarui.`, 3000);
   };
 
+  // [FIX #1] Pengurangan stok dilakukan ATOMIK di server (RPC consume_stock):
+  // stock = greatest(0, stock - qty) dihitung di database, bukan dari angka di browser.
+  // Dua kasir yang order bersamaan tidak lagi saling menimpa.
   const consumeStock = async (cartItems) => {
     const used = {};
-    cartItems.forEach(c => { if (c.menuId != null) used[c.menuId] = (used[c.menuId] || 0) + c.qty; });
-    for (const [mid, q] of Object.entries(used)) {
-      const it = items.find(m => String(m.id) === mid);
-      if (!it || it.stock == null) continue;
-      const left = Math.max(0, it.stock - q);
-      const patch = { stock: left, sold_out: left === 0 };
-      const { error } = await supabase.from('menu_items').update(patch).eq('id', it.id);
-      if (!error) setItems(prev => prev.map(m => m.id === it.id ? { ...m, ...patch } : m));
+    (cartItems || []).forEach(c => { if (c.menuId != null) used[c.menuId] = (used[c.menuId] || 0) + (c.qty || 0); });
+    const payload = Object.entries(used).map(([menu_id, qty]) => ({ menu_id: String(menu_id), qty }));
+    if (!payload.length) return;
+    const { data, error } = await supabase.rpc('consume_stock', { p_items: payload });
+    if (error) { console.error('consume_stock gagal:', error.message); flash('Stok gagal diperbarui di server: ' + error.message, 6000); return; }
+    if (Array.isArray(data) && data.length) {
+      setItems(prev => prev.map(m => {
+        const r = data.find(x => String(x.id) === String(m.id));
+        return r ? { ...m, stock: r.stock, sold_out: r.sold_out } : m;
+      }));
     }
   };
 
@@ -1218,27 +1309,20 @@ export default function App() {
   const saveAdditionToOrder = async (method = 'Belum Bayar', tendered = 0) => {
     if (!addingToOrder || !cart.length) return;
     const base = orders.find(o => o.id === addingToOrder.id) || addingToOrder;
-    const merged = [...(base.items || [])];
-    for (const c of cart) {
-      const newItem = { ...c, item_status: c.item_status || 'Baru' };
-      const i = merged.findIndex(x => x.id === c.id && itemSt(x) === 'Baru');
-      if (i > -1) merged[i] = { ...merged[i], qty: merged[i].qty + c.qty };
-      else merged.push({ ...newItem, item_status: 'Baru' });
-    }
-    const newTotal = calcTotal(merged, base.discount, base.rounding);
+    // [FIX #6] diskon & total dihitung ulang dari subtotal baru
+    const { merged, disc: newDisc, newTotal, addDue: due } = computeAddition(base, cart);
     const belumBayar = base.payment === 'Belum Bayar';
     const extraNote = notes.trim();
-    const addTotal = subtotal;
     const payNow = !belumBayar && method !== 'Belum Bayar';
-    const amount = method === 'Tunai' ? Number(tendered || 0) : addTotal;
+    const amount = method === 'Tunai' ? Number(tendered || 0) : due;
     const newPaid = payNow ? (base.paid || 0) + amount : base.paid;
-    const newChange = payNow ? (base.change || 0) + Math.max(0, amount - addTotal) : base.change;
+    const newChange = payNow ? (base.change || 0) + Math.max(0, amount - due) : base.change;
     const status = remainOf({ ...base, total: newTotal, paid: newPaid, change: newChange }) > 0 ? 'Belum Lunas' : 'Lunas';
     const patch = {
       ...(extraNote ? { notes: base.notes ? `${base.notes} | Tambahan: ${extraNote}` : `Tambahan: ${extraNote}` } : {}),
-      items: merged, subtotal: sumItems(merged), total: newTotal,
+      items: merged, subtotal: sumItems(merged), discount: newDisc, total: newTotal,
       paid: newPaid, change: newChange, status,
-      ...(payNow ? { payments: [...(base.payments || []), ledger(method, addTotal, user.username)] } : {}),
+      ...(payNow ? { payments: [...(base.payments || []), ledger(method, Math.min(amount, due), user.username)] } : {}),
       order_status: ['Siap', 'Diantar'].includes(statusOf(base)) ? 'Baru' : statusOf(base),
       kitchen_printed: false, customer_printed: false
     };
@@ -1274,7 +1358,7 @@ export default function App() {
     setPayment('Tunai'); setPaid(''); setShowPay(true);
   };
   const confirmAdditionPayment = async () => {
-    if (payment === 'Tunai' && Number(paid || 0) < subtotal) { flash('Uang diterima masih kurang.', 3000); return; }
+    if (payment === 'Tunai' && Number(paid || 0) < addDue) { flash('Uang diterima masih kurang.', 3000); return; }
     const method = payment, tendered = Number(paid || 0);
     setShowPay(false); setPaid('');
     await saveAdditionToOrder(method, tendered);
@@ -1354,7 +1438,7 @@ export default function App() {
 
   const autoPrint = async (o) => {
     try {
-      await sendPrintJob(o, 'kitchen', activePrintUrl);
+      await sendPrintJob(o, 'kitchen', printUrlRef.current);
       const fields = { kitchen_printed: true };
       await supabase.from('orders').update(fields).eq('id', o.id);
       setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...fields } : x));
@@ -1372,7 +1456,7 @@ export default function App() {
   const printOrder = async (o, type = 'customer') => {
     setPrinting(true);
     try {
-      await sendPrintJob(o, type, activePrintUrl);
+      await sendPrintJob(o, type, printUrlRef.current);
       const updateField = type === 'kitchen' ? { kitchen_printed: true } : { customer_printed: true };
       await supabase.from('orders').update(updateField).eq('id', o.id);
       setOrders(prev => prev.map(item => item.id === o.id ? { ...item, ...updateField } : item));
@@ -1411,10 +1495,13 @@ export default function App() {
     setSaving(true);
     const orderItems = cart.map(item => ({ ...item, item_status: 'Baru' }));
     const order = {
-      id: 'ZG' + Date.now().toString().slice(-7),
+      id: genOrderId(), // [FIX #4]
       date: today, time: nowTime(), created_at: new Date().toISOString(),
       customer: customer.trim() || '', location: location.trim(), notes,
       items: orderItems, subtotal, discount: discAmt, rounding: roundAmt, total: grand,
+      // [FIX #6] simpan jenis & nilai diskon asli agar bisa dihitung ulang saat ada tambahan item
+      discount_type: discAmt > 0 ? discount.type : null,
+      discount_value: discAmt > 0 ? (discount.type === 'pct' ? Math.min(discNum, 100) : discNum) : 0,
       payment, paid: received, change: isBon ? 0 : Math.max(0, received - grand),
       status: isBon ? 'Belum Lunas' : 'Lunas', order_status: 'Baru',
       payments: isBon ? [] : [ledger(payment, grand, user.username)],
@@ -1422,7 +1509,12 @@ export default function App() {
     };
 
     let queued = false;
-    const { error } = await supabase.from('orders').insert([order]);
+    let { error } = await supabase.from('orders').insert([order]);
+    // Jika ID kebetulan bentrok, buat ID baru lalu coba sekali lagi
+    if (error && isDupErr(error)) {
+      order.id = genOrderId();
+      ({ error } = await supabase.from('orders').insert([order]));
+    }
     if (error) {
       if (isNetErr(error)) { queueOrder({ ...order, _queued: true }); queued = true; }
       else { setSaving(false); flash('Gagal menyimpan pesanan ke database: ' + error.message, 7500); return; }
@@ -1439,26 +1531,38 @@ export default function App() {
     if (ok) flash(`${locLabel(order.location)} tersimpan & tiket dapur tercetak.`, 4000);
   };
 
+  // [FIX #2] "Bersihkan riwayat" kini soft delete (kolom deleted_at), bukan DELETE permanen.
+  // State lokal baru dikosongkan SETELAH server berhasil; data masih bisa dipulihkan lewat SQL.
   const clearAllOrders = async () => {
     if (user.role !== 'Admin') return;
     if (!orders.length) { flash('Tidak ada riwayat untuk dihapus.'); return; }
-    if (window.confirm('Yakin ingin menghapus seluruh riwayat pesanan di database?')) {
-      const newLog = { id: Date.now(), who: user.username, role: user.role, time: new Date().toLocaleString('id-ID'), count: orders.length };
-      await supabase.from('clear_logs').insert([newLog]);
-      await supabase.from('orders').delete().neq('id', 'ALL');
-      setClearLogs([newLog, ...clearLogs]); setOrders([]);
-      flash(`Riwayat berhasil dibersihkan oleh ${user.username}.`);
-    }
+    if (!window.confirm('Yakin ingin membersihkan seluruh riwayat pesanan? Data diarsipkan (soft delete) dan masih bisa dipulihkan lewat database.')) return;
+
+    const { data, error } = await supabase.from('orders')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: user.username })
+      .is('deleted_at', null)
+      .select('id');
+    if (error) { flash('Gagal membersihkan riwayat: ' + error.message, 7000); return; }
+
+    const count = Array.isArray(data) ? data.length : orders.length;
+    const newLog = { id: Date.now(), who: user.username, role: user.role, time: new Date().toLocaleString('id-ID'), count };
+    const { error: logError } = await supabase.from('clear_logs').insert([newLog]);
+    if (logError) { console.error('Log hapus gagal disimpan:', logError.message); flash('Riwayat dibersihkan, tetapi log gagal disimpan: ' + logError.message, 6000); }
+    else setClearLogs(prev => [newLog, ...prev]);
+
+    logAudit(null, 'clear_all', { count });
+    setOrders(prev => prev.filter(x => x._queued)); // pesanan yang masih antre offline tetap ada
+    if (!logError) flash(`Riwayat (${count} transaksi) diarsipkan oleh ${user.username}.`);
   };
 
   const syncKdsNow = async () => {
     setKdsSyncing(true);
     try {
-      const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase.from('orders').select('*').is('deleted_at', null).order('created_at', { ascending: false });
       if (data && !error) {
-        setOrders(data);
+        setOrders(withQueue(data));
         setRealtimeConnected(true);
-        flash('Data antrian dapur berhasil disinkronkan!', 2500);
+        flash('Data antrian berhasil disinkronkan!', 2500);
       }
     } catch (e) {
       flash('Gagal menyinkronkan data: ' + e.message, 3000);
@@ -1474,6 +1578,9 @@ export default function App() {
       document.exitFullscreen().then(() => setKdsFullscreen(false)).catch(() => {});
     }
   };
+
+  const changeAdminQueueMode = (m) => { setAdminQueueMode(m); write('z_admin_queue_mode', m); };
+  const changeCashierLayout = (l) => { setCashierLayout(l); write('z_cashier_layout', l); };
 
   const setStatus = async (o, st) => {
     const current = statusOf(o);
@@ -1498,10 +1605,16 @@ export default function App() {
       return;
     }
     if (statusOf(o) === st) return;
+
+    // [FIX #8] Memundurkan pesanan dari "Diantar" harus disengaja (konfirmasi) dan dicatat.
+    const reverting = current === 'Diantar' && st !== 'Diantar';
+    if (reverting && !window.confirm(`Pesanan ${o.id} sudah diantar. Yakin mengembalikan status ke "${st}"? Semua menu akan ikut dikembalikan dan perubahan ini dicatat atas nama ${user.username}.`)) return;
+
     localStatus.current[o.id] = st;
-    const patch = { order_status: st, items: syncItems(o.items, st) };
+    const patch = { order_status: st, items: syncItems(o.items, st, reverting) };
     const { error } = await supabase.from('orders').update(patch).eq('id', o.id);
     if (error) { delete localStatus.current[o.id]; flash('Gagal mengubah status: ' + error.message); return; }
+    logAudit(o.id, reverting ? 'status_revert' : 'status_change', { from: current, to: st });
     setOrders(p => p.map(x => x.id === o.id ? { ...x, ...patch } : x));
     if (st === 'Siap') flash(`${locLabel(o.location)} siap diantar.`, 3000);
   };
@@ -1529,6 +1642,7 @@ export default function App() {
       flash('Gagal memperbarui status item: ' + error.message);
       return;
     }
+    if (newSt === 'Diantar' || cur === 'Diantar') logAudit(o.id, 'item_status', { item: (o.items[itemIndex] || {}).name, from: cur, to: newSt });
     setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...patch } : x));
   };
 
@@ -1554,16 +1668,20 @@ export default function App() {
     const { error } = await supabase.from('orders').update({ location: dest }).eq('id', o.id);
     setMoveBusy(false);
     if (error) { flash('Gagal memindahkan meja: ' + error.message); return; }
-    setOrders(prev => prev.map(x => x.id === o.id ? { ...o, location: dest } : x));
+    logAudit(o.id, 'move', { from: o.location, to: dest });
+    // [FIX #7] pakai state terbaru (x), bukan salinan lama (o), supaya perubahan realtime tidak tertimpa
+    setOrders(prev => prev.map(x => x.id === o.id ? { ...x, location: dest } : x));
     setMoveOrder(null); setMoveTarget('');
     flash(`Pesanan ${o.id} dipindah dari ${locLabel(o.location)} ke ${locLabel(dest)}.`);
   };
 
+  // [FIX #3] Gabung bon dijalankan lewat RPC merge_orders: update bon tujuan + arsipkan bon asal
+  // dalam SATU transaksi database. Gagal di tengah = tidak ada perubahan sama sekali.
   const doMerge = async (srcIn, tgtIn) => {
     const src = orders.find(x => x.id === srcIn.id) || srcIn;
     const tgt = orders.find(x => x.id === tgtIn.id) || tgtIn;
     if (src.id === tgt.id) return;
-    if (!window.confirm(`Gabungkan bon ${src.id} (meja ${src.location}) ke bon ${tgt.id} (meja ${tgt.location})?\nBon ${src.id} akan dihapus dan semua itemnya masuk ke bon ${tgt.id}.`)) return;
+    if (!window.confirm(`Gabungkan bon ${src.id} (meja ${src.location}) ke bon ${tgt.id} (meja ${tgt.location})?\nBon ${src.id} akan diarsipkan dan semua itemnya masuk ke bon ${tgt.id}.`)) return;
 
     const its = (tgt.items || []).map(x => ({ ...x }));
     for (const c of (src.items || [])) {
@@ -1585,24 +1703,17 @@ export default function App() {
       order_status: STATUSES[stIdx],
       customer: tgt.customer || src.customer || '',
       notes: [tgt.notes, src.notes].filter(Boolean).join(' | '),
-      kitchen_printed: !!(tgt.kitchen_printed && src.kitchen_printed), customer_printed: false
-    };
-    const original = {
-      items: tgt.items, subtotal: tgt.subtotal, discount: tgt.discount, rounding: tgt.rounding, total: tgt.total,
-      payment: tgt.payment, paid: tgt.paid, change: tgt.change, status: tgt.status, payments: tgt.payments ?? null,
-      order_status: tgt.order_status, customer: tgt.customer, notes: tgt.notes,
-      kitchen_printed: tgt.kitchen_printed, customer_printed: tgt.customer_printed
+      kitchen_printed: !!(tgt.kitchen_printed && src.kitchen_printed), customer_printed: false,
+      // dua diskon digabung jadi nominal tetap
+      discount_type: disc > 0 ? 'rp' : null, discount_value: disc
     };
 
     setMoveBusy(true);
-    const { error } = await supabase.from('orders').update(patch).eq('id', tgt.id);
-    if (error) { setMoveBusy(false); flash('Gagal menggabungkan bon: ' + error.message); return; }
-    const { error: delError } = await supabase.from('orders').delete().eq('id', src.id);
-    if (delError) {
-      await supabase.from('orders').update(original).eq('id', tgt.id);
-      setMoveBusy(false); flash('Gagal menghapus bon asal, penggabungan dibatalkan: ' + delError.message, 6000); return;
-    }
+    const { error } = await supabase.rpc('merge_orders', { p_src: src.id, p_tgt: tgt.id, p_patch: patch });
     setMoveBusy(false);
+    if (error) { flash('Gagal menggabungkan bon (tidak ada data yang berubah): ' + error.message, 6000); return; }
+
+    logAudit(tgt.id, 'merge', { source: src.id, source_location: src.location, total: mergedTotal });
     const updated = { ...tgt, ...patch };
     setOrders(prev => prev.filter(x => x.id !== src.id).map(x => x.id === tgt.id ? updated : x));
     setSelectedOrder(updated); setMoveOrder(null); setMoveTarget('');
@@ -1610,6 +1721,8 @@ export default function App() {
   };
 
   const openSplit = (o) => { setSplitOrder(o); setSplitQty({}); setSplitLoc(o.location); setSelectedOrder(null); };
+
+  // [FIX #3] Pisah bon lewat RPC split_order: bon asal dikurangi + bon baru dibuat dalam SATU transaksi.
   const doSplit = async () => {
     const src = orders.find(x => x.id === splitOrder.id) || splitOrder;
     const moved = [], kept = [];
@@ -1631,34 +1744,39 @@ export default function App() {
     srcPatch.status = remainOf({ ...src, ...srcPatch }) > 0 ? 'Belum Lunas' : 'Lunas';
     const newPayment = R > 0 ? src.payment : 'Belum Bayar';
     const nb = {
-      id: 'ZG' + Date.now().toString().slice(-7), date: src.date, time: nowTime(), created_at: new Date().toISOString(),
+      id: genOrderId(), date: src.date, time: nowTime(), created_at: new Date().toISOString(),
       customer: src.customer || '', location: (splitLoc || src.location).trim(), notes: '',
       items: moved, subtotal: total2, discount: 0, rounding: 0, total: total2,
+      discount_type: null, discount_value: 0,
       payment: newPayment, paid: R > 0 ? R : 0, change: 0,
-      payments: R > 0 ? [] : [], order_status: statusOf(src),
+      payments: [], order_status: statusOf(src),
       kitchen_printed: true, customer_printed: false, cashier: src.cashier
     };
     nb.status = remainOf(nb) > 0 ? 'Belum Lunas' : 'Lunas';
 
     setMoveBusy(true);
-    const { error: e1 } = await supabase.from('orders').insert([nb]);
-    if (e1) { setMoveBusy(false); flash('Gagal membuat bon baru: ' + e1.message, 5000); return; }
-    const { error: e2 } = await supabase.from('orders').update(srcPatch).eq('id', src.id);
-    if (e2) { await supabase.from('orders').delete().eq('id', nb.id); setMoveBusy(false); flash('Gagal memperbarui bon asal, pemisahan dibatalkan: ' + e2.message, 6000); return; }
+    const { error } = await supabase.rpc('split_order', { p_src: src.id, p_src_patch: srcPatch, p_new: nb });
     setMoveBusy(false);
+    if (error) { flash('Gagal memisahkan bon (tidak ada data yang berubah): ' + error.message, 6000); return; }
+
+    logAudit(src.id, 'split', { new_order: nb.id, moved_total: total2 });
     setOrders(prev => [nb, ...prev.map(x => x.id === src.id ? { ...x, ...srcPatch } : x)].filter((x, i, a) => a.findIndex(y => y.id === x.id) === i));
     setSplitOrder(null);
     flash(`Bon dipisah: ${money(total2)} jadi bon baru di ${locLabel(nb.location)}.`, 6000);
   };
 
+  // [FIX #2] Hapus satu transaksi = soft delete + dicatat di audit
   const deleteOrder = async (o) => {
     if (user.role !== 'Admin') return;
-    if (!window.confirm(`Yakin ingin menghapus transaksi ${o.id} (meja ${o.location}, ${money(o.total)})? Data tidak bisa dikembalikan.`)) return;
-    const { error } = await supabase.from('orders').delete().eq('id', o.id);
+    if (!window.confirm(`Yakin ingin menghapus transaksi ${o.id} (meja ${o.location}, ${money(o.total)})? Data diarsipkan dan hanya bisa dipulihkan lewat database.`)) return;
+    const { error } = await supabase.from('orders')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: user.username })
+      .eq('id', o.id);
     if (error) { flash('Gagal menghapus transaksi: ' + error.message); return; }
     const newLog = { id: Date.now(), who: user.username, role: user.role, time: new Date().toLocaleString('id-ID'), count: 1 };
     const { error: logError } = await supabase.from('clear_logs').insert([newLog]);
     if (!logError) setClearLogs(prev => [newLog, ...prev]);
+    logAudit(o.id, 'delete', { total: o.total, location: o.location });
     setOrders(prev => prev.filter(x => x.id !== o.id));
     if (selectedOrder && selectedOrder.id === o.id) setSelectedOrder(null);
     flash(`Transaksi ${o.id} berhasil dihapus.`);
@@ -1942,7 +2060,7 @@ export default function App() {
 
             {(cart.length > 0 || addingToOrder) && (
               <button type="button" className="po-bar" onClick={() => setCartOpen(true)}>
-                <div><small>{cartQty} item{discAmt > 0 ? ' · diskon' : ''}</small><b>{money(netTotal)}</b></div>
+                <div><small>{cartQty} item{discAmt > 0 ? ' · diskon' : ''}</small><b>{money(shownTotal)}</b></div>
                 <span>Lihat Pesanan ›</span>
               </button>
             )}
@@ -2007,7 +2125,7 @@ export default function App() {
                   {discAmt > 0 && !addingToOrder && <div className="po-sub"><span>Subtotal</span><span>{money(subtotal)}</span></div>}
                   <div className="po-total">
                     <span>{addingToOrder ? 'Total tambahan' : 'Total'}</span>
-                    <strong>{money(netTotal)}</strong>
+                    <strong>{money(shownTotal)}</strong>
                   </div>
                   {addingToOrder ? (
                     <>
@@ -2159,25 +2277,23 @@ export default function App() {
           );
         })()}
 
-        {/* ================= ANTRIAN DAPUR (KDS PROFESIONAL) ================= */}
+        {/* ================= ANTRIAN (BERBEDA PER HAK AKSES) =================
+            Dapur  → KDS dapur  : memasak per item/pesanan, batch memasak, filter pos, TANPA info bayar
+            Kasir  → Penyajian  : notifikasi siap, antar per item/semua, info pembayaran, TANPA kontrol masak
+            Admin  → kedua tampilan, bisa dipindah lewat toggle (pilihan tersimpan)
+        */}
         {page === 'Antrian' && (() => {
+          const role = user.role;
+          const isAdmin = role === 'Admin';
+          const queueView = role === 'Dapur' ? 'dapur' : role === 'Kasir' ? 'kasir' : adminQueueMode;
+          const canCook = role === 'Dapur' || isAdmin;      // boleh mengubah Baru/Dimasak/Siap
+          const canDeliver = role === 'Kasir' || isAdmin;   // boleh menandai Diantar
+
           const act = todays.filter(o => statusOf(o) !== 'Diantar').sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
-          const cnt = s => act.filter(o => statusOf(o) === s).length;
-
-          // Helper filter stasiun Makanan vs Minuman
           const isDrinkItem = it => ['Minuman', 'Kopi', 'Soft Drink'].includes(it.category) || /(es|teh|jeruk|kopi|susu|jus|air|drink)/i.test(it.name);
+          const hasReady = o => (o?.items || []).some(i => itemSt(i) === 'Siap');
+          const readyCount = o => (o?.items || []).filter(i => itemSt(i) === 'Siap').length;
 
-          // Filter status
-          let filtered = qTab === 'Semua' ? act : act.filter(o => statusOf(o) === qTab);
-
-          // Filter Pos/Stasiun
-          if (kdsStation === 'Makanan') {
-            filtered = filtered.filter(o => (o.items || []).some(it => !isDrinkItem(it)));
-          } else if (kdsStation === 'Minuman') {
-            filtered = filtered.filter(o => (o.items || []).some(it => isDrinkItem(it)));
-          }
-
-          // Live elapsed timer calculation (update setiap 1 detik via kdsTime)
           const getElapsed = o => {
             if (!o.created_at) return { mins: 0, text: '0m', alertLevel: 'safe' };
             const diffSec = Math.max(0, Math.floor((kdsTime.getTime() - Date.parse(o.created_at)) / 1000));
@@ -2188,283 +2304,432 @@ export default function App() {
             return { mins, secs, text, alertLevel };
           };
 
-          // Ringkasan batch memasak (total item yang sedang menunggu/dimasak)
-          const cookingBatch = (() => {
-            const tally = {};
-            act.forEach(o => {
-              (o.items || []).forEach(it => {
-                const st = itemSt(it);
-                if (st === 'Baru' || st === 'Dimasak') {
-                  if (kdsStation === 'Makanan' && isDrinkItem(it)) return;
-                  if (kdsStation === 'Minuman' && !isDrinkItem(it)) return;
-                  const key = it.name;
-                  if (!tally[key]) tally[key] = { name: it.name, qty: 0, baru: 0, dimasak: 0 };
-                  tally[key].qty += (it.qty || 1);
-                  if (st === 'Baru') tally[key].baru += (it.qty || 1);
-                  else tally[key].dimasak += (it.qty || 1);
-                }
-              });
-            });
-            return Object.values(tally).sort((a, b) => b.qty - a.qty);
-          })();
+          // Toggle tampilan khusus Admin
+          const adminToggle = isAdmin && (
+            <div className="exp-admin-toggle" role="tablist" title="Pilih tampilan antrian">
+              <button type="button" className={queueView === 'dapur' ? 'on' : ''} onClick={() => changeAdminQueueMode('dapur')}>👨‍🍳 Tampilan Dapur</button>
+              <button type="button" className={queueView === 'kasir' ? 'on' : ''} onClick={() => changeAdminQueueMode('kasir')}>🧾 Tampilan Kasir</button>
+            </div>
+          );
 
-          const isKitchen = user.role === 'Dapur';
-          const isCashier = user.role === 'Kasir';
-          const tabs = ['Semua', 'Baru', 'Dimasak', 'Siap'];
+          const syncBtn = (
+            <button type="button" className="kds-action-btn" onClick={syncKdsNow} disabled={kdsSyncing} title="Sinkronkan data dengan database">
+              <RefreshCw size={15} className={kdsSyncing ? 'anim-spin' : ''} /> <span className="btn-text-desktop">{kdsSyncing ? 'Menyinkronkan...' : 'Sinkron'}</span>
+            </button>
+          );
+
+          const emptyBox = (title, text) => (
+            <div className="ui-empty" style={{ padding: '48px 16px', background: 'var(--sf)', borderRadius: 'var(--r-lg)', border: '1px solid var(--line)' }}>
+              <ChefHat size={42} color="var(--mut)" style={{ marginBottom: 10 }} />
+              <h3 style={{ margin: '0 0 4px', fontSize: '1.1rem' }}>{title}</h3>
+              <p style={{ margin: 0, color: 'var(--mut)', fontSize: '0.85rem' }}>{text}</p>
+            </div>
+          );
+
+          /* ============ TAMPILAN DAPUR (KDS) ============ */
+          if (queueView === 'dapur') {
+            const cnt = s => act.filter(o => statusOf(o) === s).length;
+            let list = qTab === 'Semua' ? act : act.filter(o => statusOf(o) === qTab);
+            if (kdsStation === 'Makanan') list = list.filter(o => (o.items || []).some(it => !isDrinkItem(it) && itemSt(it) !== 'Diantar'));
+            else if (kdsStation === 'Minuman') list = list.filter(o => (o.items || []).some(it => isDrinkItem(it) && itemSt(it) !== 'Diantar'));
+
+            // Ringkasan batch memasak
+            const cookingBatch = (() => {
+              const tally = {};
+              act.forEach(o => (o.items || []).forEach(it => {
+                const st = itemSt(it);
+                if (st !== 'Baru' && st !== 'Dimasak') return;
+                if (kdsStation === 'Makanan' && isDrinkItem(it)) return;
+                if (kdsStation === 'Minuman' && !isDrinkItem(it)) return;
+                const key = it.name;
+                if (!tally[key]) tally[key] = { name: it.name, qty: 0 };
+                tally[key].qty += (it.qty || 1);
+              }));
+              return Object.values(tally).sort((a, b) => b.qty - a.qty);
+            })();
+
+            const tabs = ['Semua', 'Baru', 'Dimasak', 'Siap'];
+
+            return (
+              <div className="kds-content">
+                <div className="kds-container">
+                  <div className="kds-topbar">
+                    <div className="kds-topbar-left">
+                      <div className="kds-brand">
+                        <div className="kds-brand-ico"><ChefHat size={22} /></div>
+                        <div>
+                          <h2>KDS DAPUR ZAYGA</h2>
+                          <p>{act.length} pesanan aktif · {user.username}</p>
+                        </div>
+                      </div>
+                      <span className={'kds-live-tag ' + (realtimeConnected ? '' : 'reconnecting')}>
+                        <span className="kds-pulse-dot"></span>
+                        {realtimeConnected ? 'Real-time Sinkron' : 'Menghubungkan...'}
+                      </span>
+                    </div>
+                    <div className="kds-topbar-right">
+                      {adminToggle}
+                      <div className="kds-clock" title="Waktu lokal">
+                        <Clock size={15} />
+                        {kdsTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </div>
+                      <button type="button" className="kds-action-btn" onClick={kitchenChime} title="Uji bunyi bel pesanan baru">
+                        <Bell size={15} /> <span className="btn-text-desktop">Tes </span>Bel
+                      </button>
+                      {syncBtn}
+                      <button type="button" className="kds-action-btn" onClick={toggleKdsFullscreen} title="Layar penuh untuk monitor dapur">
+                        {kdsFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                        <span className="btn-text-desktop">{kdsFullscreen ? 'Kecilkan' : 'Layar Penuh'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {cookingBatch.length > 0 && (
+                    <div className="kds-batch-bar">
+                      <span className="kds-batch-title"><Flame size={16} /> Perlu Dimasak:</span>
+                      <div className="kds-batch-items">
+                        {cookingBatch.slice(0, 10).map((b, i) => (
+                          <span key={i} className="kds-batch-pill"><b>{b.qty}×</b> {b.name}</span>
+                        ))}
+                        {cookingBatch.length > 10 && (
+                          <span className="kds-batch-pill" style={{ background: 'var(--warn-s)', color: 'var(--warn)' }}>+{cookingBatch.length - 10} menu lain</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="kds-controls">
+                    <div className="kds-seg-scroll">
+                      <div className="kds-seg" role="tablist">
+                        {tabs.map(t => (
+                          <button key={t} type="button" className={(qTab === t ? 'on ' : '') + (qTab === t ? `tab-${t.toLowerCase()}` : '')} onClick={() => setQTab(t)}>
+                            {t} ({t === 'Semua' ? act.length : cnt(t)})
+                          </button>
+                        ))}
+                      </div>
+                      <div className="kds-seg">
+                        {[['Semua', 'Semua Pos'], ['Makanan', '🍜 Makanan'], ['Minuman', '🥤 Minuman']].map(([stn, lbl]) => (
+                          <button key={stn} type="button" className={kdsStation === stn ? 'on' : ''} onClick={() => setKdsStation(stn)}>{lbl}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="kds-grid">
+                    {list.map(o => {
+                      const st = statusOf(o);
+                      const { text: elapsedText, alertLevel } = getElapsed(o);
+                      const allItems = o?.items || [];
+                      const orderItems = allItems.filter(it => kdsStation === 'Semua' || (kdsStation === 'Makanan' ? !isDrinkItem(it) : isDrinkItem(it)));
+                      const siapItems = readyCount(o);
+
+                      return (
+                        <div key={o.id} className={'kds-ticket ' + st}>
+                          <div className="kds-ticket-head">
+                            <div className="kds-meja-badge">{locLabel(o.location)}</div>
+                            <div className="kds-ticket-meta">
+                              <b>{o.customer || 'Pelanggan Umum'}</b>
+                              <small>{o.time} · {o.cashier ? `Kasir: ${o.cashier}` : o.id}</small>
+                            </div>
+                            <div className={'kds-timer ' + alertLevel} title={alertLevel === 'critical' ? 'Pesanan sudah lewat 20 menit!' : 'Waktu berjalan sejak pesanan dibuat'}>
+                              <Clock size={12} />{elapsedText}
+                            </div>
+                          </div>
+
+                          {o.notes && (
+                            <div className="kds-ticket-notes">
+                              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                              <span>CATATAN: {o.notes}</span>
+                            </div>
+                          )}
+
+                          <div className="kds-ticket-body">
+                            {orderItems.map((it, idx) => {
+                              const ist0 = itemSt(it);
+                              const actualIndex = allItems.indexOf(it);
+                              return (
+                                <div key={idx} className={'kds-item-row ' + (ist0 === 'Siap' ? 'item-siap' : ist0 === 'Dimasak' ? 'item-dimasak' : '')} style={ist0 === 'Diantar' ? { opacity: .55 } : undefined}>
+                                  <div className="kds-item-info">
+                                    <div className="kds-item-name">
+                                      <span className="kds-item-qty">{it.qty}×</span>
+                                      <span className="kds-item-title">{it.name}</span>
+                                    </div>
+                                    {it.note && <span className="kds-item-note">» {it.note}</span>}
+                                  </div>
+
+                                  {canCook && ist0 !== 'Diantar' ? (
+                                    <div className="kds-item-actions">
+                                      {ist0 === 'Baru' && (
+                                        <button type="button" onClick={() => setItemStatus(o, actualIndex, 'Dimasak')} className="kds-action-pill btn-start" title="Mulai memasak menu ini">
+                                          <Flame size={13} /> Masak
+                                        </button>
+                                      )}
+                                      {ist0 === 'Dimasak' && (
+                                        <button type="button" onClick={() => setItemStatus(o, actualIndex, 'Siap')} className="kds-action-pill btn-ready" title="Menu sudah siap disajikan">
+                                          <Check size={13} /> Siap ✓
+                                        </button>
+                                      )}
+                                      {ist0 === 'Siap' && (
+                                        <>
+                                          <button type="button" onClick={() => setItemStatus(o, actualIndex, 'Dimasak')} className="kds-action-pill badge-done" title="Klik untuk mengembalikan ke Dimasak">
+                                            <CheckCheck size={13} /> Siap ✓
+                                          </button>
+                                          {isAdmin && (
+                                            <button type="button" onClick={() => setItemStatus(o, actualIndex, 'Diantar')} className="kds-action-pill btn-ready" title="Tandai sudah diantar">
+                                              Antar
+                                            </button>
+                                          )}
+                                        </>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 800, background: STATUS_STYLE[ist0][0], color: STATUS_STYLE[ist0][1] }}>{ist0}</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="kds-ticket-foot">
+                            {canCook && st === 'Baru' && (
+                              <button type="button" className="kds-btn-cook" onClick={() => setStatus(o, 'Dimasak')}>
+                                <Flame size={16} /> Mulai Masak Semua
+                              </button>
+                            )}
+                            {canCook && st === 'Dimasak' && (
+                              <>
+                                <button type="button" className="kds-btn-ready" onClick={() => setStatus(o, 'Siap')}>
+                                  <CheckCheck size={16} /> Tandai Siap Semua
+                                </button>
+                                <button type="button" className="kds-btn-ghost" onClick={() => setStatus(o, 'Baru')}>Kembalikan ke Baru</button>
+                              </>
+                            )}
+                            {canCook && st === 'Siap' && (
+                              <>
+                                <button type="button" className="kds-btn-ghost" style={{ flex: 1 }} onClick={() => setStatus(o, 'Dimasak')}>Kembalikan ke Dimasak</button>
+                                {isAdmin && (
+                                  <button type="button" className="kds-btn-ready" onClick={() => setStatus(o, 'Diantar')}>
+                                    <CheckCircle2 size={16} /> Sudah Diantar
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            {isAdmin && st !== 'Siap' && siapItems > 0 && (
+                              <button type="button" className="kds-btn-ghost" onClick={() => deliverReady(o)}>Antar {siapItems} siap</button>
+                            )}
+                            <button type="button" className="kds-btn-ghost" onClick={() => printOrder(o, 'kitchen')} title="Cetak ulang tiket dapur">
+                              <Printer size={15} /> Cetak
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {!list.length && emptyBox('Semua Pesanan Selesai!', 'Tidak ada pesanan pada filter ini. Layar akan otomatis berbunyi ketika ada pesanan baru dari kasir.')}
+                </div>
+              </div>
+            );
+          }
+
+          /* ============ TAMPILAN KASIR / PENYAJIAN (EXPEDITER) ============ */
+          const tabOf = o => hasReady(o) ? 'Siap' : (statusOf(o) === 'Dimasak' ? 'Dimasak' : 'Baru');
+          const cntTab = t => t === 'Semua' ? act.length : act.filter(o => tabOf(o) === t).length;
+          const readyOrders = act.filter(hasReady);
+          const totalReadyMenus = readyOrders.reduce((s, o) => s + readyCount(o), 0);
+          let kList = cashierTab === 'Semua' ? act : act.filter(o => tabOf(o) === cashierTab);
+          if (cashierTab === 'Semua') {
+            kList = [...kList].sort((a, b) => (hasReady(b) ? 1 : 0) - (hasReady(a) ? 1 : 0) || Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0));
+          }
+          const kTabs = [['Siap', 'Siap Antar'], ['Dimasak', 'Dimasak'], ['Baru', 'Baru'], ['Semua', 'Semua']];
+
+          const bannerOf = o => {
+            const its = (o?.items || []).filter(i => itemSt(i) !== 'Diantar');
+            const siap = its.filter(i => itemSt(i) === 'Siap').length;
+            if (its.length && siap === its.length) return ['ready', `✅ Semua ${siap} menu siap diantar`];
+            if (siap > 0) return ['partial', `🔔 ${siap} dari ${its.length} menu siap diantar`];
+            if (its.some(i => itemSt(i) === 'Dimasak')) return ['cooking', '🔥 Sedang dimasak dapur'];
+            return ['waiting', '⏳ Menunggu dapur'];
+          };
+
+          const payTag = o => remainOf(o) > 0
+            ? <button type="button" className="exp-pay-tag exp-pay-unpaid" onClick={() => openSettle(o)} title="Klik untuk menerima pembayaran">
+                <Wallet size={12} /> {o.payment === 'Belum Bayar' ? 'Belum bayar' : 'Sisa'} {money(remainOf(o))}
+              </button>
+            : <span className="exp-pay-tag exp-pay-paid"><Check size={12} /> Lunas</span>;
+
+          const isTakeaway = o => /bawa|pulang/i.test(String(o.location || ''));
 
           return (
-            <div className="kds-content">
-              <div className="kds-container">
-
-                {/* Header Bar KDS Profesional */}
-                <div className="kds-topbar">
-                  <div className="kds-topbar-left">
-                    <div className="kds-brand">
-                      <div className="kds-brand-ico"><ChefHat size={22} /></div>
+            <div className="exp-content">
+              <div className="exp-container">
+                <div className="exp-topbar">
+                  <div className="exp-topbar-left">
+                    <div className="exp-brand">
+                      <div className="exp-brand-ico"><Radio size={22} /></div>
                       <div>
-                        <h2>KDS DAPUR ZAYGA</h2>
-                        <p>{act.length} pesanan aktif</p>
+                        <h2>PENYAJIAN & ANTRIAN</h2>
+                        <p>{act.length} pesanan aktif · {user.username}</p>
                       </div>
                     </div>
                     <span className={'kds-live-tag ' + (realtimeConnected ? '' : 'reconnecting')}>
                       <span className="kds-pulse-dot"></span>
-                      {realtimeConnected ? 'Real-time Sinkron' : 'Menghubungkan...'}
+                      {realtimeConnected ? 'Real-time' : 'Menghubungkan...'}
                     </span>
                   </div>
-
-                  <div className="kds-topbar-right">
-                    <div className="kds-clock" title="Waktu server/lokal">
-                      <Clock size={15} />
-                      {kdsTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </div>
-                    <button type="button" className="kds-action-btn" onClick={kitchenChime} title="Klik untuk menguji bunyi bel pesanan baru">
-                      <Bell size={15} /> <span className="btn-text-desktop">Tes </span>Bel
+                  <div className="exp-topbar-right">
+                    {adminToggle}
+                    <button type="button" className="kds-action-btn" onClick={() => { beep(660, 0.22, 2); buzz(60); }} title="Uji bunyi notifikasi pesanan siap">
+                      <Bell size={15} /> <span className="btn-text-desktop">Tes </span>Bunyi
                     </button>
-                    <button type="button" className="kds-action-btn" onClick={syncKdsNow} disabled={kdsSyncing} title="Sinkronkan data dengan database">
-                      <RefreshCw size={15} className={kdsSyncing ? 'anim-spin' : ''} /> <span className="btn-text-desktop">{kdsSyncing ? 'Menyinkronkan...' : 'Sinkron'}</span>
-                    </button>
-                    <button type="button" className="kds-action-btn" onClick={toggleKdsFullscreen} title="Layar penuh untuk monitor dapur">
-                      {kdsFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-                      <span className="btn-text-desktop">{kdsFullscreen ? 'Kecilkan' : 'Layar Penuh'}</span>
-                    </button>
+                    {syncBtn}
                   </div>
                 </div>
 
-                {/* Batch Memasak Cepat (Aggregated Cooking Helper) */}
-                {cookingBatch.length > 0 && (
-                  <div className="kds-batch-bar">
-                    <span className="kds-batch-title"><Flame size={16} /> Perlu Dimasak:</span>
-                    <div className="kds-batch-items">
-                      {cookingBatch.slice(0, 10).map((b, i) => (
-                        <span key={i} className="kds-batch-pill">
-                          <b>{b.qty}×</b> {b.name}
-                        </span>
+                {totalReadyMenus > 0 && (
+                  <div className="exp-ready-banner">
+                    <div className="exp-ready-banner-left">
+                      <div className="exp-ready-ico"><Bell size={18} /></div>
+                      <div>
+                        <b>{totalReadyMenus} menu siap diantar</b>
+                        <span>dari {readyOrders.length} pesanan · ketuk meja untuk melihat</span>
+                      </div>
+                    </div>
+                    <div className="exp-ready-pills">
+                      {readyOrders.map(o => (
+                        <button key={o.id} type="button" className="exp-ready-chip" onClick={() => setCashierTab('Siap')}>
+                          {locLabel(o.location)} · {readyCount(o)}
+                        </button>
                       ))}
-                      {cookingBatch.length > 10 && (
-                        <span className="kds-batch-pill" style={{ background: 'var(--warn-s)', color: 'var(--warn)' }}>
-                          +{cookingBatch.length - 10} menu lain
-                        </span>
-                      )}
                     </div>
                   </div>
                 )}
 
-                {/* Filter Tab Status & Pos Kerja */}
-                <div className="kds-controls">
-                  <div className="kds-seg-scroll">
-                    {/* Filter Status */}
-                    <div className="kds-seg" role="tablist">
-                      {tabs.map(t => (
-                        <button
-                          key={t}
-                          type="button"
-                          className={(qTab === t ? 'on ' : '') + (qTab === t ? `tab-${t.toLowerCase()}` : '')}
-                          onClick={() => setQTab(t)}
-                        >
-                          {t} ({t === 'Semua' ? act.length : cnt(t)})
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Filter Stasiun / Pos Kerja */}
-                    <div className="kds-seg">
-                      {[['Semua', 'Semua Pos'], ['Makanan', '🍜 Makanan'], ['Minuman', '🥤 Minuman']].map(([stn, lbl]) => (
-                        <button
-                          key={stn}
-                          type="button"
-                          className={kdsStation === stn ? 'on' : ''}
-                          onClick={() => setKdsStation(stn)}
-                        >
-                          {lbl}
-                        </button>
-                      ))}
-                    </div>
+                <div className="exp-controls">
+                  <div className="exp-tabs">
+                    {kTabs.map(([t, lbl]) => (
+                      <button key={t} type="button" className={'exp-tab-btn ' + (cashierTab === t ? `on tab-${t.toLowerCase()}` : '')} onClick={() => setCashierTab(t)}>
+                        {lbl}
+                        <span className={'exp-badge-count ' + (t === 'Siap' && cntTab(t) > 0 ? 'siap' : 'neutral')}>{cntTab(t)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="exp-layout-toggle">
+                    <button type="button" className={cashierLayout === 'cards' ? 'on' : ''} onClick={() => changeCashierLayout('cards')}><LayoutGrid size={14} /> Kartu</button>
+                    <button type="button" className={cashierLayout === 'compact' ? 'on' : ''} onClick={() => changeCashierLayout('compact')}><List size={14} /> Ringkas</button>
                   </div>
                 </div>
 
-                {/* Grid Tiket Pesanan KDS */}
-                <div className="kds-grid">
-                  {filtered.map(o => {
-                    const st = statusOf(o);
-                    const { text: elapsedText, alertLevel } = getElapsed(o);
-                    const allItems = o?.items || [];
-                    const orderItems = allItems.filter(it => kdsStation === 'Semua' || (kdsStation === 'Makanan' ? !isDrinkItem(it) : isDrinkItem(it)));
-                    const siapItems = allItems.filter(i => itemSt(i) === 'Siap').length;
-                    const allItemsCount = allItems.length;
+                {/* ---- Mode Kartu ---- */}
+                {cashierLayout === 'cards' && (
+                  <div className="exp-grid">
+                    {kList.map(o => {
+                      const [bk, bt] = bannerOf(o);
+                      const { text: elapsedText } = getElapsed(o);
+                      const allItems = o?.items || [];
+                      const nReady = readyCount(o);
+                      const cls = hasReady(o) ? 'has-ready' : statusOf(o) === 'Dimasak' ? 'is-cooking' : 'is-new';
+                      return (
+                        <div key={o.id} className={'exp-card ' + cls}>
+                          <div className="exp-card-head">
+                            <div className={'exp-meja-badge ' + (isTakeaway(o) ? 'takeaway' : '')}>{locLabel(o.location)}</div>
+                            <div className="exp-card-meta">
+                              <b>{o.customer || 'Pelanggan Umum'}</b>
+                              <small>{o.time} · {elapsedText} lalu</small>
+                            </div>
+                            {payTag(o)}
+                          </div>
 
-                    return (
-                      <div key={o.id} className={'kds-ticket ' + st}>
-                        {/* Header Tiket: Meja & Timer */}
-                        <div className="kds-ticket-head">
-                          <div className="kds-meja-badge">
-                            {locLabel(o.location)}
-                          </div>
-                          <div className="kds-ticket-meta">
-                            <b>{o.customer || 'Pelanggan Umum'}</b>
-                            <small>{o.time} · {o.cashier ? `Kasir: ${o.cashier}` : o.id}</small>
-                          </div>
-                          <div className={'kds-timer ' + alertLevel} title={alertLevel === 'critical' ? 'Pesanan sudah lewat 20 menit!' : 'Waktu berjalan sejak pesanan dibuat'}>
-                            <Clock size={12} />
-                            {elapsedText}
-                          </div>
-                        </div>
+                          <div className={'exp-status-banner ' + bk}>{bt}</div>
 
-                        {/* Catatan Khusus Pesanan (Jika ada) */}
-                        {o.notes && (
-                          <div className="kds-ticket-notes">
-                            <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-                            <span>CATATAN: {o.notes}</span>
-                          </div>
-                        )}
+                          {o.notes && (
+                            <div className="kds-ticket-notes">
+                              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                              <span>{o.notes}</span>
+                            </div>
+                          )}
 
-                        {/* Daftar Item Menu */}
-                        <div className="kds-ticket-body">
-                          {orderItems.map((it, idx) => {
-                            const ist0 = itemSt(it);
-                            const actualIndex = allItems.indexOf(it);
-                            return (
-                              <div
-                                key={idx}
-                                className={'kds-item-row ' + (ist0 === 'Siap' ? 'item-siap' : ist0 === 'Dimasak' ? 'item-dimasak' : '')}
-                              >
-                                <div className="kds-item-info">
-                                  <div className="kds-item-name">
-                                    <span className="kds-item-qty">{it.qty}×</span>
-                                    <span className="kds-item-title">{it.name}</span>
+                          <div className="exp-card-body">
+                            {allItems.map((it, idx) => {
+                              const s = itemSt(it);
+                              return (
+                                <div key={idx} className={'exp-item-row ' + (s === 'Siap' ? 'is-ready' : s === 'Diantar' ? 'is-delivered' : '')}>
+                                  <div className="exp-item-info">
+                                    <div className="exp-item-name">
+                                      <span className="exp-item-qty">{it.qty}×</span>
+                                      <span className="exp-item-title">{it.name}</span>
+                                    </div>
+                                    {it.note && <span className="exp-item-note">» {it.note}</span>}
                                   </div>
-                                  {it.note && <span className="kds-item-note">» {it.note}</span>}
+                                  {s === 'Siap' && canDeliver ? (
+                                    <button type="button" className="exp-item-btn-deliver" onClick={() => setItemStatus(o, idx, 'Diantar')}>
+                                      <Check size={14} /> Antar
+                                    </button>
+                                  ) : (
+                                    <span className="exp-item-status-tag" style={{ background: STATUS_STYLE[s][0], color: STATUS_STYLE[s][1] }}>{s === 'Siap' ? 'Siap ✓' : s}</span>
+                                  )}
                                 </div>
+                              );
+                            })}
+                          </div>
 
-                                {/* Tombol Status Per Item yang Praktis & Rapi */}
-                                {isKitchen && ist0 !== 'Diantar' ? (
-                                  <div className="kds-item-actions">
-                                    {ist0 === 'Baru' && (
-                                      <button
-                                        type="button"
-                                        onClick={() => setItemStatus(o, actualIndex, 'Dimasak')}
-                                        className="kds-action-pill btn-start"
-                                        title="Klik untuk mulai memasak menu ini"
-                                      >
-                                        <Flame size={13} /> Masak
-                                      </button>
-                                    )}
-                                    {ist0 === 'Dimasak' && (
-                                      <button
-                                        type="button"
-                                        onClick={() => setItemStatus(o, actualIndex, 'Siap')}
-                                        className="kds-action-pill btn-ready"
-                                        title="Klik saat menu ini sudah siap disajikan"
-                                      >
-                                        <Check size={13} /> Siap ✓
-                                      </button>
-                                    )}
-                                    {ist0 === 'Siap' && (
-                                      <button
-                                        type="button"
-                                        onClick={() => setItemStatus(o, actualIndex, 'Dimasak')}
-                                        className="kds-action-pill badge-done"
-                                        title="Menu sudah siap (klik jika ingin mengembalikan ke Dimasak)"
-                                      >
-                                        <CheckCheck size={13} /> Siap ✓
-                                      </button>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    <span style={{ padding: '3px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 800, background: STATUS_STYLE[ist0][0], color: STATUS_STYLE[ist0][1] }}>
-                                      {ist0}
-                                    </span>
-                                    {isCashier && ist0 === 'Siap' && (
-                                      <button
-                                        type="button"
-                                        onClick={() => setItemStatus(o, actualIndex, 'Diantar')}
-                                        style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '0.78rem', fontWeight: 700, background: '#16a34a', color: '#fff', cursor: 'pointer' }}
-                                      >
-                                        Antar
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        {/* Footer Aksi Massal Tiket */}
-                        <div className="kds-ticket-foot">
-                          {isKitchen && st === 'Baru' && (
-                            <button type="button" className="kds-btn-cook" onClick={() => setStatus(o, 'Dimasak')}>
-                              <Flame size={16} /> Mulai Masak Semua
-                            </button>
-                          )}
-                          {isKitchen && st === 'Dimasak' && (
-                            <>
-                              <button type="button" className="kds-btn-ready" onClick={() => setStatus(o, 'Siap')}>
-                                <CheckCheck size={16} /> Tandai Siap Semua
+                          <div className="exp-card-foot">
+                            {nReady > 0 && (
+                              <button type="button" className="exp-btn-deliver-all" onClick={() => deliverReady(o)}>
+                                <CheckCircle2 size={17} /> {nReady === allItems.filter(i => itemSt(i) !== 'Diantar').length ? 'Antar Semua' : `Antar ${nReady} Menu yang Siap`}
                               </button>
-                              <button type="button" className="kds-btn-ghost" onClick={() => setStatus(o, 'Baru')}>
-                                Kembalikan ke Baru
-                              </button>
-                            </>
-                          )}
-                          {isKitchen && st === 'Siap' && (
-                            <button type="button" className="kds-btn-ghost" style={{ width: '100%' }} onClick={() => setStatus(o, 'Dimasak')}>
-                              Kembalikan ke Dimasak
-                            </button>
-                          )}
-
-                          {isCashier && st === 'Siap' && (
-                            <button type="button" className="kds-btn-ready" style={{ width: '100%' }} onClick={() => setStatus(o, 'Diantar')}>
-                              <CheckCircle2 size={16} /> Tandai Semua Diantar
-                            </button>
-                          )}
-                          {isCashier && st !== 'Siap' && siapItems > 0 && (
-                            <button type="button" className="kds-btn-ready" style={{ width: '100%' }} onClick={() => deliverReady(o)}>
-                              Antar {siapItems} Menu yang Siap
-                            </button>
-                          )}
-
-                          {!isKitchen && !isCashier && st !== 'Diantar' && (
-                            <button type="button" className="kds-btn-cook" style={{ width: '100%' }} onClick={() => setStatus(o, STATUSES[STATUSES.indexOf(st) + 1])}>
-                              {NEXT_LABEL[st]}
-                            </button>
-                          )}
-
-                          <button type="button" className="kds-btn-ghost" onClick={() => printOrder(o, 'kitchen')} title="Cetak ulang tiket dapur">
-                            <Printer size={15} /> Cetak
-                          </button>
+                            )}
+                            <div className="exp-card-actions">
+                              <button type="button" className="exp-btn-sub" onClick={() => setSelectedOrder(o)}><Eye size={14} /> Detail</button>
+                              {remainOf(o) > 0
+                                ? <button type="button" className="exp-btn-sub" style={{ color: '#991b1b', borderColor: '#fca5a5' }} onClick={() => openSettle(o)}><Wallet size={14} /> Bayar</button>
+                                : <button type="button" className="exp-btn-sub" onClick={() => startAddToOrder(o)}><Plus size={14} /> Tambah</button>}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {!filtered.length && (
-                  <div className="ui-empty" style={{ padding: '48px 16px', background: 'var(--sf)', borderRadius: 'var(--r-lg)', border: '1px solid var(--line)' }}>
-                    <ChefHat size={42} color="var(--mut)" style={{ marginBottom: 10 }} />
-                    <h3 style={{ margin: '0 0 4px', fontSize: '1.1rem' }}>Semua Pesanan Selesai!</h3>
-                    <p style={{ margin: 0, color: 'var(--mut)', fontSize: '0.85rem' }}>Tidak ada pesanan aktif pada antrian saat ini. Layar akan otomatis berbunyi ketika ada pesanan baru dari kasir.</p>
+                      );
+                    })}
                   </div>
+                )}
+
+                {/* ---- Mode Ringkas ---- */}
+                {cashierLayout === 'compact' && (
+                  <div className="exp-list">
+                    {kList.map(o => {
+                      const [bk, bt] = bannerOf(o);
+                      const { text: elapsedText } = getElapsed(o);
+                      const nReady = readyCount(o);
+                      const summary = (o.items || []).filter(i => itemSt(i) !== 'Diantar').map(i => `${i.qty}× ${i.name}`).join(', ');
+                      return (
+                        <div key={o.id} className={'exp-list-row ' + (hasReady(o) ? 'has-ready' : '')}>
+                          <div className="exp-list-left">
+                            <div className={'exp-meja-badge ' + (isTakeaway(o) ? 'takeaway' : '')}>{locLabel(o.location)}</div>
+                            <div className="exp-card-meta">
+                              <b>{o.customer || 'Pelanggan Umum'}</b>
+                              <small>{elapsedText} lalu · {summary.length > 70 ? summary.slice(0, 70) + '…' : summary}</small>
+                            </div>
+                          </div>
+                          <div className="exp-list-mid">
+                            <span className={'exp-status-banner ' + bk} style={{ padding: '4px 10px', borderRadius: 6, border: 0 }}>{bt}</span>
+                            {payTag(o)}
+                          </div>
+                          <div className="exp-list-right">
+                            {nReady > 0 && (
+                              <button type="button" className="exp-item-btn-deliver" style={{ minHeight: 38 }} onClick={() => deliverReady(o)}>
+                                <Check size={14} /> Antar {nReady}
+                              </button>
+                            )}
+                            <button type="button" className="exp-btn-sub" style={{ padding: '0 12px' }} onClick={() => setSelectedOrder(o)}><Eye size={14} /> Detail</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {!kList.length && emptyBox(
+                  cashierTab === 'Siap' ? 'Belum ada menu yang siap' : 'Tidak ada pesanan',
+                  cashierTab === 'Siap' ? 'Layar akan berbunyi otomatis saat dapur menandai menu siap diantar.' : 'Tidak ada pesanan aktif pada filter ini.'
                 )}
               </div>
             </div>

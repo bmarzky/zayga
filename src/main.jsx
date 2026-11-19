@@ -982,7 +982,7 @@ export default function App() {
   const [menuForm, setMenuForm] = useState({ name: '', category: 'Mie', price: '' });
 
   const [cartOpen, setCartOpen] = useState(false);
-
+  const [moreOpen, setMoreOpen] = useState(false);
   const [setTab, setSetTab] = useState('printer');
   const [serverDraft, setServerDraft] = useState('');
   const [showPwd, setShowPwd] = useState(false);
@@ -2826,6 +2826,11 @@ export default function App() {
     );
   }
 
+  const moreItems = user.role === 'Admin'
+  ? [[LayoutGrid, 'Denah'], [Lock, 'Tutup Kasir'], [Utensils, 'Kelola Menu'], [Settings, 'Pengaturan']]
+  : [[Lock, 'Tutup Kasir'], [Settings, 'Pengaturan']];
+  const moreActive = moreItems.some(([, l]) => l === page);
+
   /* ===================== Aplikasi utama ===================== */
   return (
     <div className="app-shell">
@@ -4256,36 +4261,22 @@ export default function App() {
               <Settings size={22} /><span>Pengaturan</span>
             </button>
           </>
-        ) : user.role === 'Admin' ? (
-          <>
-            <button type="button" className={page === 'Dashboard' ? 'on' : ''} onClick={() => handlePageChange('Dashboard')}>
-              <LayoutDashboard size={22} /><span>Dasbor</span>
-            </button>
-            <button type="button" className={page === 'Pesanan' ? 'on' : ''} onClick={() => handlePageChange('Pesanan')}>
-              <ShoppingCart size={22} /><span>Pesanan</span>
-              {cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
-            </button>
-            <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
-              <ChefHat size={22} /><span>Antrian</span>
-              {siapCount > 0 && <i>{siapCount}</i>}
-            </button>
-            <button type="button" className={page === 'Kelola Menu' ? 'on' : ''} onClick={() => handlePageChange('Kelola Menu')}>
-              <Utensils size={22} /><span>Menu</span>
-            </button>
-            <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
-              <Settings size={22} /><span>Pengaturan</span>
-            </button>
-          </>
         ) : (
-          /* Kasir */
           <>
+            {user.role === 'Admin' && (
+              <button type="button" className={page === 'Dashboard' ? 'on' : ''} onClick={() => handlePageChange('Dashboard')}>
+                <LayoutDashboard size={22} /><span>Dasbor</span>
+              </button>
+            )}
             <button type="button" className={page === 'Pesanan' ? 'on' : ''} onClick={() => handlePageChange('Pesanan')}>
               <ShoppingCart size={22} /><span>Pesanan</span>
               {cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
             </button>
-            <button type="button" className={page === 'Denah' ? 'on' : ''} onClick={() => handlePageChange('Denah')}>
-              <LayoutGrid size={22} /><span>Denah</span>
-            </button>
+            {user.role === 'Kasir' && (
+              <button type="button" className={page === 'Denah' ? 'on' : ''} onClick={() => handlePageChange('Denah')}>
+                <LayoutGrid size={22} /><span>Denah</span>
+              </button>
+            )}
             <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
               <ChefHat size={22} /><span>Antrian</span>
               {siapCount > 0 && <i>{siapCount}</i>}
@@ -4293,12 +4284,37 @@ export default function App() {
             <button type="button" className={page === 'Riwayat' ? 'on' : ''} onClick={() => handlePageChange('Riwayat')}>
               <ClipboardList size={22} /><span>Riwayat</span>
             </button>
-            <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
-              <Settings size={22} /><span>Pengaturan</span>
+            <button type="button" className={moreActive ? 'on' : ''} onClick={() => setMoreOpen(true)}>
+              <MenuIcon size={22} /><span>Lainnya</span>
             </button>
           </>
         )}
       </nav>
+
+{moreOpen && (
+  <div className="po-ov" onClick={() => setMoreOpen(false)}>
+    <div className="po-sheet" onClick={e => e.stopPropagation()}>
+      <div className="po-handle"></div>
+      <div className="po-cart-head">
+        <div><h3>Menu lainnya</h3></div>
+        <button type="button" className="po-x" onClick={() => setMoreOpen(false)} aria-label="Tutup"><X size={18} /></button>
+      </div>
+      <div className="po-sheet-body" style={{ paddingBottom: 20 }}>
+        <div className="ms-group">
+          {moreItems.map(([Icon, label]) => (
+            <div key={label} className="ms-row clickable" onClick={() => { setMoreOpen(false); handlePageChange(label); }}>
+              <div className="ms-row-start">
+                <div className="ms-icon-box blue"><Icon size={20} /></div>
+                <div className="ms-row-text"><span className="ms-row-label">{label}</span></div>
+              </div>
+              <ChevronRight size={18} color="var(--mut)" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 
       {/* ================= SHEET: DETAIL BON ================= */}
       {selectedOrder && user.role !== 'Dapur' && (() => {

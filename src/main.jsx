@@ -318,6 +318,29 @@ async function postPrint(content, reference, urlEndpoint) {
 // ============ Web Bluetooth ESC/POS Driver Langsung ============
 let globalBleDevice = null;
 let globalBleCharacteristic = null;
+let bleReconnectHook = null; // diisi komponen App agar fungsi global bisa menyambung ulang
+
+const BLE_SERVICE_UUIDS = [
+  '000018f0-0000-1000-8000-00805f9b34fb',
+  'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+  '0000ff00-0000-1000-8000-00805f9b34fb',
+  '0000ae00-0000-1000-8000-00805f9b34fb',
+  '0000af00-0000-1000-8000-00805f9b34fb'
+];
+
+// Sambung ke GATT dan cari karakteristik yang bisa ditulis
+async function openPrinterChannel(device) {
+  const server = await device.gatt.connect();
+  const services = await server.getPrimaryServices().catch(() => []);
+  for (const sv of services) {
+    const chars = await sv.getCharacteristics().catch(() => []);
+    for (const c of chars) {
+      if (c.properties.write || c.properties.writeWithoutResponse) return c;
+    }
+  }
+  throw new Error('Karakteristik cetak tidak ditemukan pada printer ini.');
+}
 
 // ============ Supabase Print Relay Channel ============
 // Pengirim baru dianggap berhasil setelah menerima ACK dari perangkat Bluetooth.
@@ -405,6 +428,10 @@ const printViaWebBluetooth = async (uint8Data) => {
 
 const sendPrintJob = async (order, type, url) => {
   const content = buildReceipt(order, type);
+  // 0. Printer pernah terhubung tetapi putus: coba sambung ulang dulu
+  if (globalBleDevice && !globalBleDevice.gatt?.connected && bleReconnectHook) {
+    await bleReconnectHook(2);
+  }
   // 1. Coba cetak langsung via Web Bluetooth (perangkat ini terhubung BT)
   if (globalBleCharacteristic && globalBleDevice && globalBleDevice.gatt?.connected) {
     const bytes = receiptToEscPosBytes(content);
@@ -1062,6 +1089,8 @@ export default function App() {
   const [printerName, setPrinterName] = useState('');
   const [bleConnected, setBleConnected] = useState(false);
   const [bleDeviceName, setBleDeviceName] = useState('');
+  const bleManualDisc = useRef(false);   // true = diputus sengaja oleh pengguna
+  const bleReconnecting = useRef(false); // mencegah sambung ulang ganda
   const [mobileSettingsView, setMobileSettingsView] = useState('main'); // 'main', 'akun', 'log'
   const [showAdvancedPrint, setShowAdvancedPrint] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -1536,6 +1565,9 @@ export default function App() {
     ch.on('broadcast', { event: 'print_job' }, async ({ payload }) => {
       // Hanya perangkat yang benar-benar memiliki koneksi Bluetooth yang boleh mengambil job.
       if (!payload?.jobId || !Array.isArray(payload.bytesArr)) return;
+      if (globalBleDevice && !globalBleDevice.gatt?.connected && bleReconnectHook) {
+        await bleReconnectHook(2);
+      }
       if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) return;
 
       try {
@@ -1624,6 +1656,28 @@ export default function App() {
       Promise.resolve(presenceChRef.current.track({ ...deviceInfoRef.current, at: Date.now() })).catch(() => {});
     }
   }, [deviceName, bleConnected, bleDeviceName, centralAudioDevice, user?.role, user?.username]);
+
+  // Sambung ulang otomatis saat aplikasi kembali dibuka
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && globalBleDevice && !globalBleDevice.gatt?.connected) {
+        reconnectBluetoothPrinter(3);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
+  // Jaga layar tetap menyala selama printer terhubung
+  useEffect(() => {
+    if (!bleConnected || !('wakeLock' in navigator)) return;
+    let lock;
+    const get = async () => { try { lock = await navigator.wakeLock.request('screen'); } catch {} };
+    get();
+    const re = () => { if (document.visibilityState === 'visible') get(); };
+    document.addEventListener('visibilitychange', re);
+    return () => { document.removeEventListener('visibilitychange', re); lock && lock.release && lock.release(); };
+  }, [bleConnected]);
 
   const renameDevice = (name) => { setDeviceName(name); write('z_device_name', name); flash('Nama perangkat disimpan.', 2500); };
   const allNavItems = [
@@ -2223,6 +2277,35 @@ export default function App() {
     } finally { setPrinting(false); }
   };
 
+  const reconnectBluetoothPrinter = async (tries = 3) => {
+    const dev = globalBleDevice;
+    if (!dev || bleManualDisc.current) return false;
+    if (dev.gatt && dev.gatt.connected && globalBleCharacteristic) return true;
+    if (bleReconnecting.current) return false;
+    bleReconnecting.current = true;
+    setPrinterStatus('Menyambung ulang...');
+    for (let i = 0; i < tries; i++) {
+      try {
+        globalBleCharacteristic = await openPrinterChannel(dev);
+        const name = dev.name || 'Printer Bluetooth';
+        setBleConnected(true);
+        setBleDeviceName(name);
+        setPrinterName(name);
+        setPrinterStatus('Terhubung');
+        bleReconnecting.current = false;
+        return true;
+      } catch (e) {
+        await new Promise(r => setTimeout(r, 1200 * (i + 1)));
+      }
+    }
+    bleReconnecting.current = false;
+    globalBleCharacteristic = null;
+    setBleConnected(false);
+    setPrinterStatus('Tidak terhubung');
+    return false;
+  };
+  bleReconnectHook = reconnectBluetoothPrinter;
+
   const connectBluetoothPrinter = async () => {
     if (!navigator.bluetooth) {
       flash('Browser belum mendukung Web Bluetooth. Pastikan buka lewat Google Chrome di HP Android.', 5000);
@@ -2230,61 +2313,38 @@ export default function App() {
     }
     try {
       setPrinterStatus('Memeriksa...');
-      const serviceUUIDs = [
-        '000018f0-0000-1000-8000-00805f9b34fb',
-        'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
-        '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-        '0000ff00-0000-1000-8000-00805f9b34fb',
-        '0000ae00-0000-1000-8000-00805f9b34fb',
-        '0000af00-0000-1000-8000-00805f9b34fb'
-      ];
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
-        optionalServices: serviceUUIDs
+        optionalServices: BLE_SERVICE_UUIDS
       });
-      const server = await device.gatt.connect();
-      const services = await server.getPrimaryServices().catch(() => []);
-      let targetChar = null;
-      for (const s of services) {
-        const chars = await s.getCharacteristics().catch(() => []);
-        for (const c of chars) {
-          if (c.properties.write || c.properties.writeWithoutResponse) {
-            targetChar = c;
-            break;
-          }
-        }
-        if (targetChar) break;
-      }
-      if (!targetChar) {
-        throw new Error('Karakteristik cetak tidak ditemukan pada printer ini.');
-      }
+      bleManualDisc.current = false;
+      const char = await openPrinterChannel(device);
       globalBleDevice = device;
-      globalBleCharacteristic = targetChar;
+      globalBleCharacteristic = char;
       const name = device.name || 'Printer Bluetooth';
       setBleConnected(true);
       setBleDeviceName(name);
       setPrinterStatus('Terhubung');
       setPrinterName(name);
       device.addEventListener('gattserverdisconnected', () => {
-        globalBleDevice = null;
-        globalBleCharacteristic = null;
+        globalBleCharacteristic = null; // device sengaja DIPERTAHANKAN untuk sambung ulang
         setBleConnected(false);
-        setBleDeviceName('');
         setPrinterStatus('Tidak terhubung');
-        flash('Koneksi printer Bluetooth terputus.', 3500);
+        if (!bleManualDisc.current) setTimeout(() => reconnectBluetoothPrinter(3), 800);
       });
-      flash(`✓ Berhasil terhubung ke ${name}!`, 4000);
+      flash('✓ Berhasil terhubung ke ' + name + '!', 4000);
     } catch (err) {
       console.warn('Gagal sambung bluetooth:', err);
       if (err.name !== 'NotFoundError') {
-        flash(`Gagal menyambungkan printer: ${err.message}`, 5000);
+        flash('Gagal menyambungkan printer: ' + err.message, 5000);
       }
       setPrinterStatus(bleConnected ? 'Terhubung' : 'Tidak terhubung');
     }
   };
 
   const disconnectBluetoothPrinter = () => {
-    if (globalBleDevice && globalBleDevice.gatt?.connected) {
+    bleManualDisc.current = true;
+    if (globalBleDevice && globalBleDevice.gatt && globalBleDevice.gatt.connected) {
       globalBleDevice.gatt.disconnect();
     }
     globalBleDevice = null;
@@ -2296,6 +2356,10 @@ export default function App() {
   };
 
   const refreshPrinter = async () => {
+    if (globalBleDevice && !globalBleDevice.gatt?.connected) {
+      const ok = await reconnectBluetoothPrinter(2);
+      if (ok) return;
+    }
     if (globalBleDevice && globalBleDevice.gatt?.connected) {
       setBleConnected(true);
       setPrinterStatus('Terhubung');

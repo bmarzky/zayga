@@ -58,7 +58,7 @@ button.primary.large,.po-go,.pay2-submit,.mv-move{min-height:54px;font-size:1rem
 
 .topbar{height:56px;min-height:56px;flex:none;background:var(--sf);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 16px;gap:10px;box-shadow:0 1px 3px rgba(0,0,0,.04);padding-top:var(--safe-t)}
 .topbar-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
-.topbar-logo{width:32px;height:32px;border-radius:var(--r-md);background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 6px rgba(37,99,235,.25)}
+.topbar-logo{width:36px;height:36px;border-radius:10px;background:transparent;display:block;flex:0 0 36px;overflow:hidden;box-shadow:0 2px 6px rgba(37,99,235,.25)}
 .topbar-left h2{font-size:1.1rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .topbar-left .eyebrow{font-size:.64rem;margin-bottom:1px}
 .top-right{display:flex;align-items:center;gap:8px;font-size:.84rem;color:var(--mut);font-weight:500;flex-shrink:0}
@@ -139,7 +139,7 @@ tbody tr:last-child td{border-bottom:0}
 .login-card{width:100%;max-width:400px;padding:36px 28px;text-align:center;background:var(--sf);border:1px solid var(--line);border-radius:var(--r-xl);box-shadow:var(--shadow)}
 .login-card form{display:flex;flex-direction:column;gap:10px;text-align:left;margin:28px 0 8px}
 .login-card label{font-size:.84rem;font-weight:700}
-.brand-mark{width:56px;height:56px;margin:0 auto 16px;border-radius:var(--r-lg);background:var(--p);color:#fff;font-size:1.7rem;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(37,99,235,.25)}
+.brand-mark{width:72px;height:72px;margin:0 auto 16px;border-radius:20px;background:transparent;display:block;overflow:hidden;box-shadow:0 4px 12px rgba(37,99,235,.25)}
 
 /* ============ Pesanan (POS) ============ */
 .po-wrap{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
@@ -1341,3 +1341,12 @@ tbody tr:last-child td{border-bottom:0}
 .ms-back-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 0.92rem; font-weight: 700; color: var(--p); background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: var(--r-sm); }
 .ms-back-btn:hover { background: var(--p-s); }
 
+.topbar-logo img,
+.brand-mark img{
+  display:block;
+  width:100%;
+  height:100%;
+  max-width:100%;
+  max-height:100%;
+  object-fit:contain;
+}

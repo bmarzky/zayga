@@ -2958,7 +2958,7 @@ export default function App() {
     return (
       <div className="login-wrap">
         <div className="login-card">
-          <div className="brand-mark"><Coffee size={28} /></div>
+          <div className="brand-mark"><img src="/icon.svg" alt="Logo Zayga" /></div>
           <p className="eyebrow">POINT OF SALE</p>
           <h1>Zayga POS</h1>
           <p className="muted">Masuk untuk mulai melayani pelanggan.</p>
@@ -2993,7 +2993,7 @@ export default function App() {
         {page !== 'Antrian' && (
           <header className="topbar">
             <div className="topbar-left">
-              <div className="topbar-logo"><Coffee size={18} /></div>
+              <div className="topbar-logo"><img src="/icon.svg" alt="Logo Zayga" /></div>
               <div><p className="eyebrow">{user.role === 'Admin' ? 'PANEL ADMIN' : user.role === 'Dapur' ? 'AREA DAPUR' : 'AREA KASIR'}</p><h2>{page}</h2></div>
             </div>
             <div className="top-right">
@@ -3009,7 +3009,6 @@ export default function App() {
                   </button>
                 );
               })()}
-*/
               <span className="live-dot"></span>
               <span className="date-pill">
                 <Clock size={14} />

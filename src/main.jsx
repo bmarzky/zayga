@@ -308,6 +308,13 @@ async function postPrint(content, reference, urlEndpoint) {
 let globalBleDevice = null;
 let globalBleCharacteristic = null;
 
+// ============ Supabase Print Relay Channel ============
+// Perangkat tanpa BT mengirim job ke channel ini.
+// Perangkat yang terhubung BT mendengarkan dan mencetak otomatis.
+let printRelayChannel = null;
+
+const PRINT_RELAY_CHANNEL = 'print-relay-v1';
+
 const receiptToEscPosBytes = (content) => {
   const bytes = [];
   const add = (...b) => bytes.push(...b);
@@ -370,13 +377,22 @@ const printViaWebBluetooth = async (uint8Data) => {
 
 const sendPrintJob = async (order, type, url) => {
   const content = buildReceipt(order, type);
-  // 1. Coba cetak langsung via Web Bluetooth (Tap-Tap) jika terhubung
+  // 1. Coba cetak langsung via Web Bluetooth (perangkat ini terhubung BT)
   if (globalBleCharacteristic && globalBleDevice && globalBleDevice.gatt?.connected) {
     const bytes = receiptToEscPosBytes(content);
     await printViaWebBluetooth(bytes);
     return { job: { ok: true }, printer: globalBleDevice.name || 'Printer Bluetooth (Langsung)' };
   }
-  // 2. Fallback ke Cleanter bridge lokal/server jika diatur
+  // 2. Coba relay via Supabase Broadcast ke perangkat lain yang punya BT
+  if (printRelayChannel) {
+    await printRelayChannel.send({
+      type: 'broadcast',
+      event: 'print_job',
+      payload: { content, jobId: `${order?.id}-${type}-${Date.now()}`, type, orderId: order?.id }
+    });
+    return { job: { ok: true, relayed: true }, printer: 'Relay → Perangkat Printer' };
+  }
+  // 3. Fallback ke Cleanter bridge lokal/server jika diatur
   return postPrint(content, `${order?.id}-${type}`, url);
 };
 
@@ -1403,6 +1419,50 @@ export default function App() {
     window.addEventListener('resize', calc);
     return () => window.removeEventListener('resize', calc);
   }, [user, page]);
+
+  // ============ Setup Print Relay via Supabase Broadcast ============
+  // Semua perangkat bergabung ke channel yang sama.
+  // Perangkat yang punya BT aktif: mencetak job yang dikirim perangkat lain.
+  // Perangkat tanpa BT: hanya mengirim job, tidak mencetak.
+  useEffect(() => {
+    if (!user) return;
+
+    // Tutup channel lama jika ada
+    if (printRelayChannel) {
+      supabase.removeChannel(printRelayChannel);
+      printRelayChannel = null;
+    }
+
+    const ch = supabase.channel(PRINT_RELAY_CHANNEL, {
+      config: { broadcast: { self: false } }
+    });
+
+    ch.on('broadcast', { event: 'print_job' }, async ({ payload }) => {
+      // Hanya perangkat yang terhubung BT yang akan mencetak
+      if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) return;
+      try {
+        const bytes = receiptToEscPosBytes(payload.content);
+        await printViaWebBluetooth(bytes);
+        // Konfirmasi balik ke semua perangkat bahwa sudah dicetak
+        ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId } });
+      } catch (err) {
+        console.warn('Relay print gagal:', err);
+      }
+    });
+
+    ch.on('broadcast', { event: 'print_done' }, ({ payload }) => {
+      // Perangkat pengirim tahu bahwa job sudah dieksekusi
+      flash(`✓ Dicetak oleh printer Bluetooth (Relay)`, 3000);
+    });
+
+    ch.subscribe();
+    printRelayChannel = ch;
+
+    return () => {
+      supabase.removeChannel(ch);
+      printRelayChannel = null;
+    };
+  }, [user]);
 
   useEffect(() => {
     if (addingToOrder) return;
@@ -3981,6 +4041,24 @@ export default function App() {
                             <Bluetooth size={14} /> Sambungkan
                           </button>
                         )}
+                      </div>
+
+                      {/* Baris 1b: Status Relay Print */}
+                      <div className="ms-row" style={{ background: bleConnected ? '#f0fdf4' : '#f8fafc' }}>
+                        <div className="ms-row-start">
+                          <div className={'ms-icon-box ' + (bleConnected ? 'green' : 'slate')}><Radio size={18} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Print Relay (Jaringan)</span>
+                            <span className="ms-row-sub">
+                              {bleConnected
+                                ? '✓ HP ini menjadi Printer Server — HP lain bisa cetak lewat sini'
+                                : 'HP lain yang punya BT akan mencetak untukmu otomatis'}
+                            </span>
+                          </div>
+                        </div>
+                        <span style={{ fontSize: '.72rem', fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: bleConnected ? '#dcfce7' : '#e2e8f0', color: bleConnected ? '#166534' : '#64748b' }}>
+                          {bleConnected ? 'SERVER' : 'CLIENT'}
+                        </span>
                       </div>
 
                       {/* Baris 2: Pusat Cetak Kasir (Auto-Print) */}

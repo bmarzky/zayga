@@ -363,15 +363,20 @@ const printViaWebBluetooth = async (uint8Data) => {
   if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) {
     throw new Error('Printer Bluetooth belum terhubung.');
   }
-  const CHUNK_SIZE = 64;
+  // Chunk 512 byte — lebih cepat dari 64 byte, masih aman untuk sebagian besar printer BT
+  const CHUNK_SIZE = 512;
   for (let i = 0; i < uint8Data.length; i += CHUNK_SIZE) {
     const chunk = uint8Data.slice(i, i + CHUNK_SIZE);
-    if (globalBleCharacteristic.writeValueWithoutResponse) {
+    // writeValueWithoutResponse = tidak perlu menunggu ACK dari printer → lebih cepat
+    if (globalBleCharacteristic.properties?.writeWithoutResponse) {
       await globalBleCharacteristic.writeValueWithoutResponse(chunk);
     } else {
       await globalBleCharacteristic.writeValue(chunk);
     }
-    await new Promise(r => setTimeout(r, 25));
+    // Delay minimal hanya jika ada lebih dari satu chunk
+    if (i + CHUNK_SIZE < uint8Data.length) {
+      await new Promise(r => setTimeout(r, 5));
+    }
   }
 };
 
@@ -383,12 +388,16 @@ const sendPrintJob = async (order, type, url) => {
     await printViaWebBluetooth(bytes);
     return { job: { ok: true }, printer: globalBleDevice.name || 'Printer Bluetooth (Langsung)' };
   }
-  // 2. Coba relay via Supabase Broadcast ke perangkat lain yang punya BT
+  // 2. Relay via Supabase Broadcast — kirim bytes yang sudah di-encode (bukan content)
+  //    agar perangkat penerima tidak perlu encode ulang, langsung cetak
   if (printRelayChannel) {
+    const bytes = receiptToEscPosBytes(content);
+    // Konversi Uint8Array ke Array biasa agar bisa di-JSON
+    const bytesArr = Array.from(bytes);
     await printRelayChannel.send({
       type: 'broadcast',
       event: 'print_job',
-      payload: { content, jobId: `${order?.id}-${type}-${Date.now()}`, type, orderId: order?.id }
+      payload: { bytesArr, jobId: `${order?.id}-${type}-${Date.now()}` }
     });
     return { job: { ok: true, relayed: true }, printer: 'Relay → Perangkat Printer' };
   }
@@ -1441,8 +1450,9 @@ export default function App() {
       // Hanya perangkat yang terhubung BT yang akan mencetak
       if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) return;
       try {
-        const bytes = receiptToEscPosBytes(payload.content);
-        await printViaWebBluetooth(bytes);
+        // Gunakan bytes yang sudah di-encode dari pengirim — tidak perlu encode ulang
+        const uint8 = new Uint8Array(payload.bytesArr);
+        await printViaWebBluetooth(uint8);
         // Konfirmasi balik ke semua perangkat bahwa sudah dicetak
         ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId } });
       } catch (err) {

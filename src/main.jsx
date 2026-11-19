@@ -819,12 +819,20 @@ export default function App() {
   const flushing = useRef(false);
 
   const [notifPerm, setNotifPerm] = useState(() => typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default');
-  // Pusat audio hanya aktif pada perangkat yang ditandai secara lokal (mis. laptop dapur).
+  // Pusat audio hanya aktif pada perangkat yang ditandai secara lokal (mis. HP/tablet dapur).
   const [centralAudioDevice, setCentralAudioDevice] = useState(() => read('z_central_audio_device', false));
   const [centralAudioReady, setCentralAudioReady] = useState(false);
   const kitchenAudioRef = useRef(null);
   const liveChannelRef = useRef(null); // channel realtime, dipakai untuk mengirim sinyal alarm dapur
   const seenKitchenAudioOrders = useRef(new Set());
+
+  // Peran sebagai Pusat Cetak Kasir (hanya HP kasir yang tersambung ke printer Bluetooth yang mengaktifkannya)
+  const [isPrintStation, setIsPrintStation] = useState(() => read('z_is_print_station', user?.role === 'Kasir' || user?.role === 'Admin'));
+  const isPrintStationRef = useRef(isPrintStation);
+  isPrintStationRef.current = isPrintStation;
+  const centralAudioDeviceRef = useRef(centralAudioDevice);
+  centralAudioDeviceRef.current = centralAudioDevice;
+  const seenAutoPrintedOrders = useRef(new Set());
 
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [addingToOrder, setAddingToOrder] = useState(null);
@@ -937,7 +945,7 @@ export default function App() {
   // [FIX] Objek Audio dibuat otomatis jika belum ada (mis. setelah halaman di-reload),
   // sehingga alarm tidak bisu sampai kasir mengaktifkan ulang pusat audio.
   const playCentralKitchenAlarm = () => {
-    if (!read('z_central_audio_device', false)) return;
+    if (!read('z_central_audio_device', false) && userRef.current?.role !== 'Dapur') return;
     try {
       if (!kitchenAudioRef.current) {
         const a = new Audio('/kitchen-alarm.mp3');
@@ -983,7 +991,7 @@ export default function App() {
       setCentralAudioReady(true);
       setCentralAudioDevice(true);
       write('z_central_audio_device', true);
-      flash('Laptop berhasil diaktifkan sebagai pusat audio dapur.', 4500);
+      flash('Perangkat berhasil diaktifkan sebagai pusat audio dapur.', 4500);
     } catch (err) {
       setCentralAudioReady(false);
       flash('Audio belum bisa diputar. Pastikan file public/kitchen-alarm.mp3 tersedia dan klik aktivasi lagi.', 6500);
@@ -1118,9 +1126,17 @@ export default function App() {
           const exists = ordersRef.current.some(x => x.id === n.id);
           setOrders(o => o.some(x => x.id === n.id) ? o : [n, ...o]);
 
-          // (alarm lama dihapus: bunyi sekarang dipicu saat cetak tiket dapur lewat sendPrint)
+          // Bunyikan alarm di HP Dapur atau perangkat Pusat Audio
+          if (centralAudioDeviceRef.current || userRef.current?.role === 'Dapur') {
+            playCentralKitchenAlarm();
+          }
 
-          // Notifikasi visual tetap boleh tampil pada perangkat lain; tidak ada suara lokal di HP kasir.
+          // Otomatis cetak tiket dapur jika HP ini adalah Pusat Cetak Kasir
+          if (isPrintStationRef.current && !n.kitchen_printed) {
+            autoPrint(n);
+          }
+
+          // Notifikasi visual tetap boleh tampil pada perangkat lain
           if (!exists && n.cashier !== userRef.current?.username) {
             const msgTitle = userRef.current?.role === 'Dapur' ? 'PESANAN BARU MASUK!' : `Pesanan baru ${locLabel(n.location)}`;
             const msgBody = `${locLabel(n.location)} · Oleh: ${n.cashier} · ${(n.items || []).length} item`;
@@ -1142,6 +1158,21 @@ export default function App() {
           }
           const prev = ordersRef.current.find(x => x.id === n.id);
           setOrders(o => o.map(x => x.id === n.id ? { ...x, ...n } : x));
+
+          // Otomatis cetak tiket menu tambahan di Pusat Cetak jika ada penambahan item baru
+          if (isPrintStationRef.current && !n.kitchen_printed && prev && (n.items || []).length > (prev.items || []).length) {
+            const addedItems = (n.items || []).slice((prev.items || []).length);
+            if (addedItems.length > 0) {
+              const additionOrder = {
+                ...n,
+                id: `${n.id}-T${Date.now().toString().slice(-4)}`,
+                items: addedItems,
+                isAddition: true,
+                queueNo: computeQueueNo(n, ordersRef.current)
+              };
+              autoPrint(additionOrder);
+            }
+          }
 
           const isFrontStaff = userRef.current?.role !== 'Dapur';
           if (isFrontStaff) {
@@ -1598,18 +1629,22 @@ export default function App() {
     let updated = { ...base, ...patch };
     const addedCart = cart;
 
-    try {
-      // Tiket tambahan memakai nomor antrian bon aslinya agar dapur tahu ini milik antrian yang mana
-      await sendPrint(
-        { ...base, id: `${base.id}-T${Date.now().toString().slice(-4)}`, items: addedCart, isAddition: true, notes: extraNote, queueNo: computeQueueNo(base, ordersRef.current) },
-        'kitchen',
-        activePrintUrl
-      );
-      await supabase.from('orders').update({ kitchen_printed: true }).eq('id', base.id);
-      updated = { ...updated, kitchen_printed: true };
-      flash(`Tambahan ${locLabel(base.location)} tersimpan & tiket dapur tercetak.`, 6000);
-    } catch (err) {
-      flash(`Tambahan ${locLabel(base.location)} tersimpan, tapi cetak dapur gagal: ${err.message}`, 8000);
+    if (isPrintStation) {
+      try {
+        // Tiket tambahan memakai nomor antrian bon aslinya agar dapur tahu ini milik antrian yang mana
+        await sendPrint(
+          { ...base, id: `${base.id}-T${Date.now().toString().slice(-4)}`, items: addedCart, isAddition: true, notes: extraNote, queueNo: computeQueueNo(base, ordersRef.current) },
+          'kitchen',
+          activePrintUrl
+        );
+        await supabase.from('orders').update({ kitchen_printed: true }).eq('id', base.id);
+        updated = { ...updated, kitchen_printed: true };
+        flash(`Tambahan ${locLabel(base.location)} tersimpan & tiket dapur tercetak.`, 6000);
+      } catch (err) {
+        flash(`Tambahan ${locLabel(base.location)} tersimpan, tapi cetak dapur gagal: ${err.message}`, 8000);
+      }
+    } else {
+      flash(`Tambahan ${locLabel(base.location)} tersimpan & dikirim ke kasir/dapur.`, 4000);
     }
     consumeStock(addedCart);
     setOrders(prev => prev.map(o => o.id === base.id ? updated : o));
@@ -1856,6 +1891,9 @@ export default function App() {
 
   // Cetak tiket dapur otomatis (pesanan baru, bon belum bayar, antrean offline): lewat sendPrint agar berbunyi.
   const autoPrint = async (o) => {
+    if (!o || !o.id) return false;
+    if (seenAutoPrintedOrders.current.has(o.id)) return true;
+    seenAutoPrintedOrders.current.add(o.id);
     try {
       await sendPrint(forPrint(o, 'kitchen'), 'kitchen', printUrlRef.current);
       const fields = { kitchen_printed: true };
@@ -1863,6 +1901,7 @@ export default function App() {
       setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...fields } : x));
       return true;
     } catch (err) {
+      seenAutoPrintedOrders.current.delete(o.id);
       flash(
         `Pesanan tersimpan, tetapi tiket dapur gagal dicetak: ${err.message}`,
         9000,
@@ -1979,9 +2018,13 @@ export default function App() {
 
     if (queued) { flash('Tidak ada internet: pesanan diantre dan dikirim otomatis saat online.', 7000); return; }
     consumeStock(sold);
-    flash('Pesanan tersimpan. Mencetak tiket dapur...', 3000);
-    const ok = await autoPrint(order);
-    if (ok) flash(`${locLabel(order.location)} tersimpan & tiket dapur tercetak.`, 4000);
+    if (isPrintStation) {
+      flash('Pesanan tersimpan. Mencetak tiket dapur...', 3000);
+      const ok = await autoPrint(order);
+      if (ok) flash(`${locLabel(order.location)} tersimpan & tiket dapur tercetak.`, 4000);
+    } else {
+      flash(`Pesanan ${locLabel(order.location)} tersimpan & dikirim ke kasir/dapur.`, 4000);
+    }
   };
 
   // [FIX #2] "Bersihkan riwayat" kini soft delete (kolom deleted_at), bukan DELETE permanen.
@@ -3668,6 +3711,27 @@ export default function App() {
                           <button type="button" className="sx-btn" onClick={refreshPrinter}><RefreshCw size={16} /> Cek ulang</button>
                           <button type="button" className="sx-btn primary" disabled={printing} onClick={testPrinter}><Printer size={16} /> {printing ? 'Mencetak...' : 'Cetak tes'}</button>
                         </div>
+                        <div className="sx-field" style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line, #e5e7eb)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                            <div>
+                              <b style={{ fontSize: '0.9rem', color: 'var(--ink)' }}>Pusat Cetak Kasir (Auto-Print)</b>
+                              <p className="sx-hint" style={{ marginTop: 2 }}>Aktifkan pada HP kasir yang tersambung ke printer Bluetooth agar otomatis mencetak tiket dapur setiap ada pesanan masuk dari pelayan mana pun.</p>
+                            </div>
+                            <button
+                              type="button"
+                              className={'sx-btn ' + (isPrintStation ? 'primary' : '')}
+                              style={{ minWidth: 90, flexShrink: 0 }}
+                              onClick={() => {
+                                const next = !isPrintStation;
+                                setIsPrintStation(next);
+                                write('z_is_print_station', next);
+                                flash(next ? 'HP ini dijadikan Pusat Cetak Kasir (Auto-Print aktif).' : 'Pusat Cetak dinonaktifkan pada perangkat ini.', 3500);
+                              }}
+                            >
+                              {isPrintStation ? '✓ Aktif' : 'Nonaktif'}
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     )}
 
@@ -3687,11 +3751,11 @@ export default function App() {
                       <div className="sx-field" style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line, #e5e7eb)' }}>
                         <div className="sx-head" style={{ marginBottom: 8 }}>
                           <span className="sx-ico amber"><Volume2 size={20} /></span>
-                          <div><h3>Pusat audio dapur</h3><p>Hanya satu perangkat (disarankan laptop) yang memutar file alarm setiap tiket dapur dicetak, dari semua kasir.</p></div>
+                          <div><h3>Pusat audio dapur</h3><p>Aktifkan pada HP/tablet di dapur agar otomatis memutar sirine alarm setiap ada pesanan baru masuk dari pelayan/kasir.</p></div>
                         </div>
                         <div className="sx-kv"><span>Peran perangkat ini</span><b><span className={'sx-pill ' + (centralAudioDevice ? 'ok' : 'wait')}>{centralAudioDevice ? 'Pusat audio' : 'Perangkat kasir biasa'}</span></b></div>
                         <div className="sx-kv"><span>Status audio sesi ini</span><b><span className={'sx-pill ' + (centralAudioReady ? 'ok' : 'wait')}>{centralAudioReady ? 'Siap memutar' : 'Belum diaktifkan'}</span></b></div>
-                        <p className="sx-hint" style={{ marginTop: 8 }}>Letakkan file alarm di <b>public/kitchen-alarm.mp3</b>. Hubungkan Headphones 2-K12 ke laptop dan pilih sebagai output suara Windows.</p>
+                        <p className="sx-hint" style={{ marginTop: 8 }}>File alarm memutar <b>kitchen-alarm.mp3</b>. Dapat dihubungkan ke speaker Bluetooth di dapur agar suara lebih nyaring.</p>
                         <div className="sx-actions">
                           {!centralAudioDevice ? (
                             <button type="button" className="sx-btn amber" onClick={activateCentralAudio}><Volume2 size={16} /> Jadikan perangkat ini pusat audio & tes</button>

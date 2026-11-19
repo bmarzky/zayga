@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ChevronRight, LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio, List, Rows3, Umbrella } from 'lucide-react';
+import { ChevronRight, LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio, List, Rows3, Umbrella, Bluetooth, ArrowLeft } from 'lucide-react';
 import { supabase } from './supabase';
 import './app.css';
 // import './dash.css';
@@ -303,7 +303,82 @@ async function postPrint(content, reference, urlEndpoint) {
   if (!response.ok) throw new Error(data.fix || data.detail || data.error || `Gagal mencetak (${response.status})`);
   return { job: data, printer: health.printer?.name || 'Printer Bluetooth' };
 }
-const sendPrintJob = (order, type, url) => postPrint(buildReceipt(order, type), `${order?.id}-${type}`, url);
+
+// ============ Web Bluetooth ESC/POS Driver Langsung ============
+let globalBleDevice = null;
+let globalBleCharacteristic = null;
+
+const receiptToEscPosBytes = (content) => {
+  const bytes = [];
+  const add = (...b) => bytes.push(...b);
+  const textEncoder = new TextEncoder();
+  const addText = (str) => {
+    const enc = textEncoder.encode(str || '');
+    for (let i = 0; i < enc.length; i++) bytes.push(enc[i]);
+  };
+
+  // ESC @: Inisialisasi printer
+  add(0x1b, 0x40);
+
+  for (const item of (content || [])) {
+    if (item.type === 'text') {
+      const align = item.align === 'center' ? 1 : item.align === 'right' ? 2 : 0;
+      add(0x1b, 0x61, align);
+      add(0x1b, 0x45, item.bold ? 1 : 0);
+      add(0x1d, 0x21, item.size === 'large' ? 0x11 : 0x00);
+      addText(item.text || '');
+      add(0x0a);
+    } else if (item.type === 'divider') {
+      add(0x1b, 0x61, 0);
+      add(0x1b, 0x45, 0);
+      add(0x1d, 0x21, 0);
+      addText('--------------------------------\n');
+    } else if (item.type === 'row') {
+      add(0x1b, 0x61, 0);
+      add(0x1b, 0x45, item.bold ? 1 : 0);
+      add(0x1d, 0x21, 0);
+      const left = String(item.left || '');
+      const right = String(item.right || '');
+      const totalWidth = 32;
+      const spaces = Math.max(1, totalWidth - left.length - right.length);
+      addText(left + ' '.repeat(spaces) + right + '\n');
+    }
+  }
+
+  // Feed 3 baris & potong kertas (cut)
+  add(0x0a, 0x0a, 0x0a);
+  add(0x1d, 0x56, 0x42, 0x00);
+
+  return new Uint8Array(bytes);
+};
+
+const printViaWebBluetooth = async (uint8Data) => {
+  if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) {
+    throw new Error('Printer Bluetooth belum terhubung.');
+  }
+  const CHUNK_SIZE = 64;
+  for (let i = 0; i < uint8Data.length; i += CHUNK_SIZE) {
+    const chunk = uint8Data.slice(i, i + CHUNK_SIZE);
+    if (globalBleCharacteristic.writeValueWithoutResponse) {
+      await globalBleCharacteristic.writeValueWithoutResponse(chunk);
+    } else {
+      await globalBleCharacteristic.writeValue(chunk);
+    }
+    await new Promise(r => setTimeout(r, 25));
+  }
+};
+
+const sendPrintJob = async (order, type, url) => {
+  const content = buildReceipt(order, type);
+  // 1. Coba cetak langsung via Web Bluetooth (Tap-Tap) jika terhubung
+  if (globalBleCharacteristic && globalBleDevice && globalBleDevice.gatt?.connected) {
+    const bytes = receiptToEscPosBytes(content);
+    await printViaWebBluetooth(bytes);
+    return { job: { ok: true }, printer: globalBleDevice.name || 'Printer Bluetooth (Langsung)' };
+  }
+  // 2. Fallback ke Cleanter bridge lokal/server jika diatur
+  return postPrint(content, `${order?.id}-${type}`, url);
+};
 
 /* ===================== Komponen Pendukung ===================== */
 function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
@@ -871,8 +946,12 @@ export default function App() {
   const [localPrintUrl, setLocalPrintUrl] = useState(() => getLocalPrintBridge());
   const [serverPrintUrl, setServerPrintUrl] = useState('http://localhost:9100');
 
-  const [printerStatus, setPrinterStatus] = useState('Memeriksa...');
+  const [printerStatus, setPrinterStatus] = useState('Tidak terhubung');
   const [printerName, setPrinterName] = useState('');
+  const [bleConnected, setBleConnected] = useState(false);
+  const [bleDeviceName, setBleDeviceName] = useState('');
+  const [mobileSettingsView, setMobileSettingsView] = useState('main'); // 'main', 'akun', 'log'
+  const [showAdvancedPrint, setShowAdvancedPrint] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [menuForm, setMenuForm] = useState({ name: '', category: 'Mie', price: '' });
@@ -1925,22 +2004,117 @@ export default function App() {
     } finally { setPrinting(false); }
   };
 
+  const connectBluetoothPrinter = async () => {
+    if (!navigator.bluetooth) {
+      flash('Browser belum mendukung Web Bluetooth. Pastikan buka lewat Google Chrome di HP Android.', 5000);
+      return;
+    }
+    try {
+      setPrinterStatus('Memeriksa...');
+      const serviceUUIDs = [
+        '000018f0-0000-1000-8000-00805f9b34fb',
+        'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+        '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+        '0000ff00-0000-1000-8000-00805f9b34fb',
+        '0000ae00-0000-1000-8000-00805f9b34fb',
+        '0000af00-0000-1000-8000-00805f9b34fb'
+      ];
+      const device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: serviceUUIDs
+      });
+      const server = await device.gatt.connect();
+      const services = await server.getPrimaryServices().catch(() => []);
+      let targetChar = null;
+      for (const s of services) {
+        const chars = await s.getCharacteristics().catch(() => []);
+        for (const c of chars) {
+          if (c.properties.write || c.properties.writeWithoutResponse) {
+            targetChar = c;
+            break;
+          }
+        }
+        if (targetChar) break;
+      }
+      if (!targetChar) {
+        throw new Error('Karakteristik cetak tidak ditemukan pada printer ini.');
+      }
+      globalBleDevice = device;
+      globalBleCharacteristic = targetChar;
+      const name = device.name || 'Printer Bluetooth';
+      setBleConnected(true);
+      setBleDeviceName(name);
+      setPrinterStatus('Terhubung');
+      setPrinterName(name);
+      device.addEventListener('gattserverdisconnected', () => {
+        globalBleDevice = null;
+        globalBleCharacteristic = null;
+        setBleConnected(false);
+        setBleDeviceName('');
+        setPrinterStatus('Tidak terhubung');
+        flash('Koneksi printer Bluetooth terputus.', 3500);
+      });
+      flash(`✓ Berhasil terhubung ke ${name}!`, 4000);
+    } catch (err) {
+      console.warn('Gagal sambung bluetooth:', err);
+      if (err.name !== 'NotFoundError') {
+        flash(`Gagal menyambungkan printer: ${err.message}`, 5000);
+      }
+      setPrinterStatus(bleConnected ? 'Terhubung' : 'Tidak terhubung');
+    }
+  };
+
+  const disconnectBluetoothPrinter = () => {
+    if (globalBleDevice && globalBleDevice.gatt?.connected) {
+      globalBleDevice.gatt.disconnect();
+    }
+    globalBleDevice = null;
+    globalBleCharacteristic = null;
+    setBleConnected(false);
+    setBleDeviceName('');
+    setPrinterStatus('Tidak terhubung');
+    flash('Printer Bluetooth diputuskan.', 3000);
+  };
+
   const refreshPrinter = async () => {
+    if (globalBleDevice && globalBleDevice.gatt?.connected) {
+      setBleConnected(true);
+      setPrinterStatus('Terhubung');
+      setPrinterName(globalBleDevice.name || 'Printer Bluetooth (Web)');
+      return;
+    }
     setPrinterStatus('Memeriksa...');
     try {
       const data = await checkPrintBridge(activePrintUrl);
-      setPrinterStatus('Terhubung'); setPrinterName(data.printer?.name || 'Printer Bluetooth');
+      setPrinterStatus('Terhubung'); setPrinterName(data.printer?.name || 'Printer Bluetooth (Bridge)');
     } catch (err) { setPrinterStatus('Tidak terhubung'); setPrinterName(err.message); }
   };
 
   const testPrinter = async () => {
     setPrinting(true);
     try {
-      const content = [receiptText('ZAYGA', 'center', true, 'large'), receiptText('TES KONEKSI PRINTER', 'center', true), receiptDivider(), receiptText('Bluetooth Classic · 58 mm', 'center'), receiptText(new Date().toLocaleString('id-ID'), 'center'), { type: 'feed', lines: 3 }];
-      await postPrint(content, 'ZAYGA-TEST-PRINTER', activePrintUrl);
-      flash('Tes printer berhasil.', 3000);
-    } catch (err) { flash(`Tes printer gagal: ${err.message}`, 6000); }
-    finally { setPrinting(false); }
+      const dummyOrder = {
+        id: 'TES-' + Math.floor(1000 + Math.random() * 9000),
+        date: today,
+        time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+        cashier: user?.username || 'Kasir',
+        customer: 'Tes Koneksi Printer',
+        location: 'Kasir',
+        items: [{ id: 1, name: 'Tes Cetak Bluetooth', qty: 1, price: 10000 }],
+        total: 10000,
+        paid: 10000,
+        change: 0,
+        payment: 'Tunai',
+        status: 'Lunas',
+        notes: 'Printer Siap Digunakan'
+      };
+      await sendPrintJob(dummyOrder, 'customer', activePrintUrl);
+      flash('✓ Tes printer berhasil dicetak!', 3500);
+    } catch (err) {
+      flash(`Tes printer gagal: ${err.message}`, 6000);
+    } finally {
+      setPrinting(false);
+    }
   };
 
   // rowsOverride: daftar pembayar dari popup split bill per menu (opsional)
@@ -3661,140 +3835,25 @@ export default function App() {
           </div>
         )}
 
-        {/* ================= PENGATURAN ================= */}
+        {/* ================= PENGATURAN (MOBILE STYLE) ================= */}
         {page === 'Pengaturan' && (() => {
           const isAdmin = user.role === 'Admin';
           const isDapur = user.role === 'Dapur';
-          const onl = printerStatus === 'Terhubung';
-          const checking = printerStatus === 'Memeriksa...';
-          const tabs = [
-            { id: 'printer', label: isDapur ? 'Notifikasi' : 'Printer & Notifikasi', icon: Printer },
-            ...(isAdmin ? [{ id: 'akun', label: 'Karyawan', icon: Users }, { id: 'log', label: 'Log hapus', icon: ShieldAlert }] : []),
-            { id: 'profil', label: 'Akun saya', icon: UserRound }
-          ];
-          const tab = tabs.some(t => t.id === setTab) ? setTab : 'printer';
-          const serverDirty = serverDraft.trim() !== serverPrintUrl.trim();
           const roleCls = r => r === 'Admin' ? 'admin' : r === 'Dapur' ? 'dapur' : 'kasir';
           const notifPill = notifPerm === 'granted' ? ['ok', 'Diizinkan'] : notifPerm === 'denied' ? ['bad', 'Ditolak'] : ['wait', 'Belum diminta'];
+          const serverDirty = serverDraft.trim() !== serverPrintUrl.trim();
+          const checking = printerStatus === 'Memeriksa...';
 
-          return (
-            <div className="content">
-              <div className="sx">
-                <div className="sx-tabs" role="tablist">
-                  {tabs.map(t => {
-                    const TabIcon = t.icon;
-                    return (
-                      <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={'sx-tab ' + (tab === t.id ? 'on' : '')} onClick={() => setSetTab(t.id)}>
-                        <TabIcon size={17} /> {t.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {tab === 'printer' && (
-                  <div className="sx-grid">
-                    {!isDapur && (
-                      <div className="ui-card">
-                        <div className="sx-head">
-                          <span className="sx-ico"><Printer size={20} /></span>
-                          <div><h3>Status printer</h3><p>Cek apakah printer Bluetooth siap mencetak lewat Cleanter.</p></div>
-                        </div>
-                        <div className={'sx-status ' + (onl ? 'ok' : checking ? '' : 'bad')}>
-                          <span className="dot"></span>
-                          <div>
-                            <b>{onl ? 'Printer terhubung' : checking ? 'Memeriksa koneksi...' : 'Printer belum terhubung'}</b>
-                            <span className="t">{printerName || 'Pastikan aplikasi Cleanter aktif & Bluetooth menyala.'}</span>
-                          </div>
-                        </div>
-                        <div className="sx-kv" style={{ marginTop: 8 }}><span>Endpoint aktif</span><b>{activePrintUrl}</b></div>
-                        <div className="sx-actions">
-                          <button type="button" className="sx-btn" onClick={refreshPrinter}><RefreshCw size={16} /> Cek ulang</button>
-                          <button type="button" className="sx-btn primary" disabled={printing} onClick={testPrinter}><Printer size={16} /> {printing ? 'Mencetak...' : 'Cetak tes'}</button>
-                        </div>
-                        <div className="sx-field" style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line, #e5e7eb)' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-                            <div>
-                              <b style={{ fontSize: '0.9rem', color: 'var(--ink)' }}>Pusat Cetak Kasir (Auto-Print)</b>
-                              <p className="sx-hint" style={{ marginTop: 2 }}>Aktifkan pada HP kasir yang tersambung ke printer Bluetooth agar otomatis mencetak tiket dapur setiap ada pesanan masuk dari pelayan mana pun.</p>
-                            </div>
-                            <button
-                              type="button"
-                              className={'sx-btn ' + (isPrintStation ? 'primary' : '')}
-                              style={{ minWidth: 90, flexShrink: 0 }}
-                              onClick={() => {
-                                const next = !isPrintStation;
-                                setIsPrintStation(next);
-                                write('z_is_print_station', next);
-                                flash(next ? 'HP ini dijadikan Pusat Cetak Kasir (Auto-Print aktif).' : 'Pusat Cetak dinonaktifkan pada perangkat ini.', 3500);
-                              }}
-                            >
-                              {isPrintStation ? '✓ Aktif' : 'Nonaktif'}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="ui-card" style={isDapur ? { gridColumn: '1 / -1' } : undefined}>
-                      <div className="sx-head">
-                        <span className="sx-ico amber"><Bell size={20} /></span>
-                        <div><h3>Notifikasi pesanan</h3><p>Suara dan pop-up saat ada pesanan baru atau menu siap diantar, meski layar redup atau membuka aplikasi lain.</p></div>
-                      </div>
-                      <div className="sx-kv"><span>Izin browser</span><b><span className={'sx-pill ' + notifPill[0]}>{notifPill[1]}</span></b></div>
-                      <div className="sx-kv"><span>Koneksi realtime</span><b><span className={'sx-pill ' + (online ? 'ok' : 'bad')}>{online ? 'Online' : 'Offline'}</span></b></div>
-                      <div className="sx-actions">
-                        {notifPerm !== 'granted' && (
-                          <button type="button" className="sx-btn amber" onClick={requestNotificationPermission}><Bell size={16} /> Aktifkan notifikasi</button>
-                        )}
-                        <button type="button" className="sx-btn" onClick={testNotification}><Bell size={16} /> Tes notifikasi perangkat</button>
-                      </div>
-                      <div className="sx-field" style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line, #e5e7eb)' }}>
-                        <div className="sx-head" style={{ marginBottom: 8 }}>
-                          <span className="sx-ico amber"><Volume2 size={20} /></span>
-                          <div><h3>Pusat audio dapur</h3><p>Aktifkan pada HP/tablet di dapur agar otomatis memutar sirine alarm setiap ada pesanan baru masuk dari pelayan/kasir.</p></div>
-                        </div>
-                        <div className="sx-kv"><span>Peran perangkat ini</span><b><span className={'sx-pill ' + (centralAudioDevice ? 'ok' : 'wait')}>{centralAudioDevice ? 'Pusat audio' : 'Perangkat kasir biasa'}</span></b></div>
-                        <div className="sx-kv"><span>Status audio sesi ini</span><b><span className={'sx-pill ' + (centralAudioReady ? 'ok' : 'wait')}>{centralAudioReady ? 'Siap memutar' : 'Belum diaktifkan'}</span></b></div>
-                        <p className="sx-hint" style={{ marginTop: 8 }}>File alarm memutar <b>kitchen-alarm.mp3</b>. Dapat dihubungkan ke speaker Bluetooth di dapur agar suara lebih nyaring.</p>
-                        <div className="sx-actions">
-                          {!centralAudioDevice ? (
-                            <button type="button" className="sx-btn amber" onClick={activateCentralAudio}><Volume2 size={16} /> Jadikan perangkat ini pusat audio & tes</button>
-                          ) : (
-                            <>
-                              <button type="button" className="sx-btn amber" onClick={activateCentralAudio}><Volume2 size={16} /> Aktifkan ulang & tes audio</button>
-                              <button type="button" className="sx-btn danger" onClick={disableCentralAudio}>Nonaktifkan pusat audio</button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      {notifPerm === 'denied' && <p className="sx-hint" style={{ marginTop: 10 }}>Izin ditolak. Buka pengaturan situs di browser lalu ubah izin Notifikasi menjadi "Izinkan".</p>}
-                    </div>
-
-                    {!isDapur && (
-                      <div className="ui-card sx-full">
-                        <div className="sx-head">
-                          <span className="sx-ico green"><Server size={20} /></span>
-                          <div><h3>Alamat printer (endpoint)</h3><p>Atur ke mana struk dan tiket dapur dikirim.</p></div>
-                        </div>
-                        <div className="sx-field">
-                          <label className="sx-label"><Server size={15} /> Server pusat (semua kasir)</label>
-                          <div className="sx-row">
-                            <input className="sx-input" inputMode="url" value={serverDraft} onChange={e => setServerDraft(e.target.value)} placeholder="http://192.168.1.100:9100" disabled={!isAdmin} />
-                            {isAdmin && <button type="button" className="sx-btn primary" disabled={!serverDirty} onClick={saveServerPrintUrl}><Save size={16} /> Simpan</button>}
-                          </div>
-                          <span className="sx-hint">{isAdmin ? 'Tersimpan di cloud, otomatis disinkronkan ke semua perangkat kasir.' : 'Hanya Admin yang dapat mengubah alamat server pusat.'}</span>
-                        </div>
-                        <div className="sx-field">
-                          <label className="sx-label"><Smartphone size={15} /> Khusus perangkat ini (lokal)</label>
-                          <input className="sx-input" inputMode="url" value={localPrintUrl} onChange={handleLocalPrintUrlChange} placeholder="http://localhost:9100" />
-                          <span className="sx-hint">Hanya berlaku di perangkat ini. Jika server pusat diisi, server pusat diprioritaskan.</span>
-                        </div>
-                      </div>
-                    )}
+          // Sub-tampilan akun karyawan
+          if (mobileSettingsView === 'akun' && isAdmin) {
+            return (
+              <div className="content">
+                <div className="ms-container">
+                  <div className="ms-back-bar">
+                    <button type="button" className="ms-back-btn" onClick={() => setMobileSettingsView('main')}>
+                      <ArrowLeft size={18} /> Kembali ke Pengaturan
+                    </button>
                   </div>
-                )}
-
-                {tab === 'akun' && isAdmin && (
                   <div className="sx-grid">
                     <div className="ui-card">
                       <div className="sx-head">
@@ -3855,9 +3914,21 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                )}
+                </div>
+              </div>
+            );
+          }
 
-                {tab === 'log' && isAdmin && (
+          // Sub-tampilan log hapus
+          if (mobileSettingsView === 'log' && isAdmin) {
+            return (
+              <div className="content">
+                <div className="ms-container">
+                  <div className="ms-back-bar">
+                    <button type="button" className="ms-back-btn" onClick={() => setMobileSettingsView('main')}>
+                      <ArrowLeft size={18} /> Kembali ke Pengaturan
+                    </button>
+                  </div>
                   <div className="ui-card">
                     <div className="sx-head">
                       <span className="sx-ico red"><ShieldAlert size={20} /></span>
@@ -3877,23 +3948,229 @@ export default function App() {
                       {!clearLogs.length && <div className="ui-empty">Belum ada riwayat yang dihapus.</div>}
                     </div>
                   </div>
-                )}
+                </div>
+              </div>
+            );
+          }
 
-                {tab === 'profil' && (
-                  <div className="ui-card" style={{ maxWidth: 520, width: '100%', margin: '0 auto' }}>
-                    <div className="sx-me">
-                      <div className="big">{user.username[0].toUpperCase()}</div>
-                      <b>{user.username}</b>
-                      <span className={'sx-badge ' + roleCls(user.role)}>{user.role}</span>
+          // Tampilan Utama Pengaturan Gaya Mobile Modern
+          return (
+            <div className="content">
+              <div className="ms-container">
+                {/* Header Profil Karyawan */}
+                <div className="ms-profile">
+                  <div className="ms-avatar">{user.username[0].toUpperCase()}</div>
+                  <div className="ms-profile-info">
+                    <div className="ms-profile-name">{user.username}</div>
+                    <div className="ms-profile-meta">
+                      <span className={'ms-badge ' + roleCls(user.role)}>{user.role}</span>
+                      <span className={'ms-badge ' + (online ? 'kasir' : 'dapur')}>{online ? 'Online' : 'Offline'}</span>
+                      {queueCount > 0 && <span className="ms-badge dapur">{queueCount} antrean</span>}
                     </div>
-                    <div className="sx-kv"><span>Status koneksi</span><b><span className={'sx-pill ' + (online ? 'ok' : 'bad')}>{online ? 'Online' : 'Offline'}</span></b></div>
-                    <div className="sx-kv"><span>Pesanan menunggu kirim</span><b>{queueCount}</b></div>
-                    <div className="sx-kv"><span>Notifikasi</span><b><span className={'sx-pill ' + notifPill[0]}>{notifPill[1]}</span></b></div>
-                    <div className="sx-actions">
-                      <button type="button" className="sx-btn danger" onClick={logoutNow}><LogOut size={16} /> Keluar dari aplikasi</button>
+                  </div>
+                </div>
+
+                {/* Section: Printer & Struk Kasir */}
+                {!isDapur && (
+                  <div className="ms-section">
+                    <div className="ms-section-title">Printer & Struk Kasir</div>
+                    <div className="ms-group">
+                      {/* Baris 1: Koneksi Bluetooth Langsung (Tap-Tap) */}
+                      <div className="ms-row">
+                        <div className="ms-row-start">
+                          <div className="ms-icon-box blue"><Bluetooth size={20} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Printer Bluetooth</span>
+                            <span className="ms-row-sub">
+                              {bleConnected
+                                ? `✓ Terhubung: ${bleDeviceName}`
+                                : printerStatus === 'Terhubung'
+                                ? `✓ Terhubung: ${printerName}`
+                                : checking
+                                ? 'Memeriksa koneksi printer...'
+                                : 'Belum terhubung · Tap untuk sambungkan'}
+                            </span>
+                          </div>
+                        </div>
+                        {bleConnected ? (
+                          <button type="button" className="ms-btn-action danger" onClick={disconnectBluetoothPrinter}>
+                            Putuskan
+                          </button>
+                        ) : (
+                          <button type="button" className="ms-btn-action primary" onClick={connectBluetoothPrinter}>
+                            <Bluetooth size={14} /> Sambungkan
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Baris 2: Pusat Cetak Kasir (Auto-Print) */}
+                      <div className="ms-row">
+                        <div className="ms-row-start">
+                          <div className="ms-icon-box green"><Printer size={20} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Pusat Cetak Kasir (Auto-Print)</span>
+                            <span className="ms-row-sub">Otomatis mencetak tiket dapur setiap ada pesanan dari pelayan</span>
+                          </div>
+                        </div>
+                        <label className="ms-switch">
+                          <input
+                            type="checkbox"
+                            checked={isPrintStation}
+                            onChange={e => {
+                              const next = e.target.checked;
+                              setIsPrintStation(next);
+                              write('z_is_print_station', next);
+                              flash(next ? 'HP ini dijadikan Pusat Cetak Kasir (Auto-Print aktif).' : 'Pusat Cetak dinonaktifkan pada perangkat ini.', 3500);
+                            }}
+                          />
+                          <span className="ms-slider"></span>
+                        </label>
+                      </div>
+
+                      {/* Baris 3: Uji Coba Cetak Struk */}
+                      <div className="ms-row">
+                        <div className="ms-row-start">
+                          <div className="ms-icon-box slate"><RefreshCw size={19} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Uji Coba Cetak Struk</span>
+                            <span className="ms-row-sub">Tes printer thermal untuk memeriksa kertas & tulisan</span>
+                          </div>
+                        </div>
+                        <button type="button" className="ms-btn-action secondary" disabled={printing} onClick={testPrinter}>
+                          {printing ? 'Mencetak...' : 'Cetak Tes'}
+                        </button>
+                      </div>
+
+                      {/* Baris 4: Pengaturan Lanjutan (Cleanter IP Bridge) */}
+                      <div className="ms-row">
+                        <div className="ms-row-start">
+                          <div className="ms-icon-box slate"><Server size={19} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Pengaturan Lanjutan (Cleanter IP)</span>
+                            <span className="ms-row-sub">{showAdvancedPrint ? 'Tutup konfigurasi IP manual' : 'Gunakan opsi ini jika memakai aplikasi Cleanter'}</span>
+                          </div>
+                        </div>
+                        <button type="button" className="ms-btn-action secondary" onClick={() => setShowAdvancedPrint(!showAdvancedPrint)}>
+                          {showAdvancedPrint ? 'Tutup' : 'Atur IP'}
+                        </button>
+                      </div>
+
+                      {showAdvancedPrint && (
+                        <div style={{ padding: '14px 16px', background: '#f8fafc', borderTop: '1px solid var(--line)' }}>
+                          <div className="sx-field" style={{ marginBottom: 12 }}>
+                            <label className="sx-label"><Server size={14} /> Server Pusat Cleanter (semua kasir)</label>
+                            <div className="sx-row">
+                              <input className="sx-input" inputMode="url" value={serverDraft} onChange={e => setServerDraft(e.target.value)} placeholder="http://192.168.1.100:9100" disabled={!isAdmin} />
+                              {isAdmin && <button type="button" className="sx-btn primary" disabled={!serverDirty} onClick={saveServerPrintUrl}><Save size={14} /> Simpan</button>}
+                            </div>
+                          </div>
+                          <div className="sx-field">
+                            <label className="sx-label"><Smartphone size={14} /> Cleanter Khusus HP Ini</label>
+                            <input className="sx-input" inputMode="url" value={localPrintUrl} onChange={handleLocalPrintUrlChange} placeholder="http://localhost:9100" />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
+
+                {/* Section: Suara & Dapur */}
+                <div className="ms-section">
+                  <div className="ms-section-title">Suara & Notifikasi Dapur</div>
+                  <div className="ms-group">
+                    {/* Baris 1: Pusat Audio Dapur (Alarm Otomatis) */}
+                    <div className="ms-row">
+                      <div className="ms-row-start">
+                        <div className="ms-icon-box amber"><Volume2 size={20} /></div>
+                        <div className="ms-row-text">
+                          <span className="ms-row-label">Alarm Pesanan Dapur</span>
+                          <span className="ms-row-sub">{centralAudioDevice ? '✓ Aktif · Memutar sirine saat pesanan masuk' : 'Nonaktif · Sirine tidak berbunyi'}</span>
+                        </div>
+                      </div>
+                      {!centralAudioDevice ? (
+                        <button type="button" className="ms-btn-action primary" style={{ background: '#d97706' }} onClick={activateCentralAudio}>
+                          <Volume2 size={14} /> Aktifkan & Tes
+                        </button>
+                      ) : (
+                        <button type="button" className="ms-btn-action danger" onClick={disableCentralAudio}>
+                          Matikan
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Baris 2: Izin Notifikasi HP */}
+                    <div className="ms-row">
+                      <div className="ms-row-start">
+                        <div className="ms-icon-box amber"><Bell size={20} /></div>
+                        <div className="ms-row-text">
+                          <span className="ms-row-label">Notifikasi Pesanan HP</span>
+                          <span className="ms-row-sub">Izin peramban: <b>{notifPill[1]}</b></span>
+                        </div>
+                      </div>
+                      {notifPerm !== 'granted' ? (
+                        <button type="button" className="ms-btn-action primary" style={{ background: '#d97706' }} onClick={requestNotificationPermission}>
+                          Izinkan
+                        </button>
+                      ) : (
+                        <button type="button" className="ms-btn-action secondary" onClick={testNotification}>
+                          Tes Pop-up
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section: Manajemen Karyawan (Admin Only) */}
+                {isAdmin && (
+                  <div className="ms-section">
+                    <div className="ms-section-title">Manajemen Kedai (Admin)</div>
+                    <div className="ms-group">
+                      <div className="ms-row clickable" onClick={() => setMobileSettingsView('akun')}>
+                        <div className="ms-row-start">
+                          <div className="ms-icon-box purple"><Users size={20} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Kelola Akun Karyawan</span>
+                            <span className="ms-row-sub">{usersList.length} akun terdaftar (Kasir, Dapur, Admin)</span>
+                          </div>
+                        </div>
+                        <ChevronRight size={18} color="var(--mut)" />
+                      </div>
+                      <div className="ms-row clickable" onClick={() => setMobileSettingsView('log')}>
+                        <div className="ms-row-start">
+                          <div className="ms-icon-box red"><ShieldAlert size={20} /></div>
+                          <div className="ms-row-text">
+                            <span className="ms-row-label">Log Hapus Transaksi</span>
+                            <span className="ms-row-sub">{clearLogs.length} catatan audit penghapusan</span>
+                          </div>
+                        </div>
+                        <ChevronRight size={18} color="var(--mut)" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Section: Aplikasi */}
+                <div className="ms-section">
+                  <div className="ms-section-title">Aplikasi</div>
+                  <div className="ms-group">
+                    <div className="ms-row">
+                      <div className="ms-row-start">
+                        <div className="ms-icon-box slate"><Smartphone size={20} /></div>
+                        <div className="ms-row-text">
+                          <span className="ms-row-label">Zayga POS Mobile</span>
+                          <span className="ms-row-sub">v1.2 · Mode PWA Cloud Real-time</span>
+                        </div>
+                      </div>
+                      <span className="ms-badge admin">Active</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 20 }}>
+                  <button type="button" className="ms-btn-action danger full" onClick={logoutNow}>
+                    <LogOut size={17} /> Keluar dari Akun ({user.username})
+                  </button>
+                </div>
               </div>
             </div>
           );

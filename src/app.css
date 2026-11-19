@@ -1247,3 +1247,61 @@ tbody tr:last-child td{border-bottom:0}
 @media (max-width: 480px) {
   .db-kpis { grid-template-columns: 1fr; }
 }
+
+/* ============================================================
+   MOBILE SETTINGS UI (MODERN GROUPED CARDS)
+   ============================================================ */
+.ms-container { max-width: 600px; margin: 0 auto; padding-bottom: 90px; }
+.ms-profile { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: var(--r-lg); background: #ffffff; border: 1px solid var(--line); margin-bottom: 20px; box-shadow: var(--shadow); }
+.ms-avatar { width: 50px; height: 50px; border-radius: 50%; background: var(--p-s); color: var(--p); font-size: 1.3rem; font-weight: 800; display: grid; place-items: center; border: 1.5px solid var(--p-b); flex-shrink: 0; }
+.ms-profile-info { flex: 1; min-width: 0; }
+.ms-profile-name { font-size: 1.1rem; font-weight: 800; color: var(--ink); margin-bottom: 2px; }
+.ms-profile-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ms-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
+.ms-badge.admin { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.ms-badge.kasir { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+.ms-badge.dapur { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+
+.ms-section { margin-bottom: 20px; }
+.ms-section-title { font-size: 0.76rem; font-weight: 700; color: var(--mut); text-transform: uppercase; letter-spacing: 0.05em; margin-left: 10px; margin-bottom: 8px; }
+.ms-group { background: #ffffff; border-radius: var(--r-lg); border: 1px solid var(--line); overflow: hidden; box-shadow: var(--shadow); }
+.ms-row { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; gap: 12px; transition: background 0.15s; border-bottom: 1px solid var(--line); }
+.ms-row:last-child { border-bottom: none; }
+.ms-row.clickable { cursor: pointer; }
+.ms-row.clickable:hover { background: #f8fafc; }
+.ms-row.clickable:active { background: #f1f5f9; }
+.ms-row-start { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+.ms-icon-box { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; }
+.ms-icon-box.blue { background: #eff6ff; color: #2563eb; }
+.ms-icon-box.green { background: #f0fdf4; color: #16a34a; }
+.ms-icon-box.amber { background: #fffbeb; color: #d97706; }
+.ms-icon-box.purple { background: #f5f3ff; color: #7c3aed; }
+.ms-icon-box.red { background: #fef2f2; color: #dc2626; }
+.ms-icon-box.slate { background: #f1f5f9; color: #475569; }
+
+.ms-row-text { flex: 1; min-width: 0; }
+.ms-row-label { font-size: 0.92rem; font-weight: 700; color: var(--ink); display: block; }
+.ms-row-sub { font-size: 0.78rem; color: var(--mut); margin-top: 2px; display: block; line-height: 1.35; }
+
+/* Switch Toggle (iOS style) */
+.ms-switch { position: relative; display: inline-block; width: 48px; height: 28px; flex-shrink: 0; cursor: pointer; }
+.ms-switch input { opacity: 0; width: 0; height: 0; margin: 0; }
+.ms-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .25s ease; border-radius: 99px; }
+.ms-slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 3px; bottom: 3px; background-color: white; transition: .25s ease; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.25); }
+.ms-switch input:checked + .ms-slider { background-color: #2563eb; }
+.ms-switch input:checked + .ms-slider:before { transform: translateX(20px); }
+
+.ms-btn-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 14px; border-radius: var(--r-sm); font-size: 0.82rem; font-weight: 700; border: none; cursor: pointer; transition: background .15s, opacity .15s; white-space: nowrap; flex-shrink: 0; }
+.ms-btn-action.primary { background: #2563eb; color: #fff; }
+.ms-btn-action.primary:hover { background: #1d4ed8; }
+.ms-btn-action.success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+.ms-btn-action.secondary { background: #f1f5f9; color: var(--ink2); border: 1px solid var(--line); }
+.ms-btn-action.secondary:hover { background: #e2e8f0; }
+.ms-btn-action.danger { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+.ms-btn-action.danger:hover { background: #fecaca; }
+.ms-btn-action.full { width: 100%; min-height: 44px; font-size: 0.92rem; border-radius: var(--r-md); }
+
+.ms-back-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.ms-back-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 0.92rem; font-weight: 700; color: var(--p); background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: var(--r-sm); }
+.ms-back-btn:hover { background: var(--p-s); }
+

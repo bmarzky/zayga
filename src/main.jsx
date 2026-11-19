@@ -143,6 +143,17 @@ const ledger = (m, a, by) => ({ m, a, by, t: new Date().toISOString(), d: new Da
 const isNetErr = e => !navigator.onLine || /fetch|network|failed to|timeout|load failed/i.test(e?.message || '');
 const isDupErr = e => /duplicate|23505/i.test(String(e?.message || '') + String(e?.code || ''));
 const buzz = (ms = 25) => { try { navigator.vibrate && navigator.vibrate(ms) } catch {} };
+const getDeviceId = () => {
+  let id = read('z_device_id', null);
+  if (!id) { id = 'DV' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); write('z_device_id', id); }
+  return id;
+};
+const guessDeviceName = () => {
+  const ua = navigator.userAgent || '';
+  const os = /Android/i.test(ua) ? 'Android' : /iPhone|iPad|iPod/i.test(ua) ? 'iOS' : /Windows/i.test(ua) ? 'Windows' : /Mac/i.test(ua) ? 'Mac' : /Linux/i.test(ua) ? 'Linux' : 'Perangkat';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  return `${os} · ${br}`;
+};
 
 // [FIX #4] ID order: potongan waktu (base36) + 3 karakter acak kriptografis.
 const genOrderId = () => {
@@ -309,11 +320,23 @@ let globalBleDevice = null;
 let globalBleCharacteristic = null;
 
 // ============ Supabase Print Relay Channel ============
-// Perangkat tanpa BT mengirim job ke channel ini.
-// Perangkat yang terhubung BT mendengarkan dan mencetak otomatis.
+// Pengirim baru dianggap berhasil setelah menerima ACK dari perangkat Bluetooth.
 let printRelayChannel = null;
-
+let printRelayReady = false;
+const pendingPrintJobs = new Map();
 const PRINT_RELAY_CHANNEL = 'print-relay-v1';
+const PRINT_RELAY_ACK_TIMEOUT = 20000;
+
+const waitForPrintRelayAck = (jobId) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => {
+    pendingPrintJobs.delete(jobId);
+    reject(new Error('Tidak ada konfirmasi dari perangkat printer. Pastikan HP server tetap membuka Zayga POS, Bluetooth terhubung, dan kedua perangkat online.'));
+  }, PRINT_RELAY_ACK_TIMEOUT);
+  pendingPrintJobs.set(jobId, {
+    resolve: result => { clearTimeout(timer); pendingPrintJobs.delete(jobId); result?.ok ? resolve(result) : reject(new Error(result?.error || 'Perangkat printer gagal mencetak.')); },
+    reject: error => { clearTimeout(timer); pendingPrintJobs.delete(jobId); reject(error); }
+  });
+});
 
 const receiptToEscPosBytes = (content) => {
   const bytes = [];
@@ -388,18 +411,26 @@ const sendPrintJob = async (order, type, url) => {
     await printViaWebBluetooth(bytes);
     return { job: { ok: true }, printer: globalBleDevice.name || 'Printer Bluetooth (Langsung)' };
   }
-  // 2. Relay via Supabase Broadcast — kirim bytes yang sudah di-encode (bukan content)
-  //    agar perangkat penerima tidak perlu encode ulang, langsung cetak
+  // 2. Relay jaringan: wajib menunggu ACK dari HP yang benar-benar mencetak.
   if (printRelayChannel) {
+    if (!printRelayReady) {
+      throw new Error('Koneksi Print Relay belum siap. Tunggu beberapa detik lalu coba cetak kembali.');
+    }
     const bytes = receiptToEscPosBytes(content);
-    // Konversi Uint8Array ke Array biasa agar bisa di-JSON
-    const bytesArr = Array.from(bytes);
-    await printRelayChannel.send({
-      type: 'broadcast',
-      event: 'print_job',
-      payload: { bytesArr, jobId: `${order?.id}-${type}-${Date.now()}` }
-    });
-    return { job: { ok: true, relayed: true }, printer: 'Relay → Perangkat Printer' };
+    const jobId = `${order?.id || 'order'}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ackPromise = waitForPrintRelayAck(jobId);
+    try {
+      const status = await printRelayChannel.send({
+        type: 'broadcast',
+        event: 'print_job',
+        payload: { bytesArr: Array.from(bytes), jobId }
+      });
+      if (status !== 'ok') throw new Error(`Pesan cetak gagal dikirim melalui jaringan (${status || 'status tidak diketahui'}).`);
+    } catch (err) {
+      pendingPrintJobs.get(jobId)?.reject(err);
+    }
+    const ack = await ackPromise;
+    return { job: { ok: true, relayed: true, ack }, printer: ack.printer || 'Printer Bluetooth (Relay)' };
   }
   // 3. Fallback ke Cleanter bridge lokal/server jika diatur
   return postPrint(content, `${order?.id}-${type}`, url);
@@ -493,6 +524,56 @@ function Delta({ cur, prev }) {
   return <span className={'db-delta ' + (p > 0 ? 'up' : 'down')}>{p > 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{p > 0 ? '+' : ''}{p}%</span>;
 }
 
+// ===================== Status Perangkat (Printer & Suara) =====================
+function DeviceStatusCard({ peers, myId, myName, onRename }) {
+  const [draft, setDraft] = useState(myName);
+  useEffect(() => setDraft(myName), [myName]);
+  const label = p => `${p.deviceName || 'Perangkat'} (${p.username || '?'})${p.deviceId === myId ? ' — perangkat ini' : ''}`;
+  const printers = peers.filter(p => p.printer);
+  const audios = peers.filter(p => p.audio);
+  const Row = ({ icon, title, list, emptyText, extra }) => (
+    <div className="ms-row">
+      <div className="ms-row-start">
+        <div className={'ms-icon-box ' + (list.length ? 'green' : 'slate')}>{icon}</div>
+        <div className="ms-row-text">
+          <span className="ms-row-label">{title}</span>
+          {list.length
+            ? list.map(p => <span key={p.deviceId} className="ms-row-sub" style={{ color: '#166534', fontWeight: 600 }}>✓ {label(p)}{extra ? ` · ${extra(p)}` : ''}</span>)
+            : <span className="ms-row-sub" style={{ color: '#b45309' }}>{emptyText}</span>}
+        </div>
+      </div>
+    </div>
+  );
+  return (
+    <div className="ms-section">
+      <div className="ms-section-title">Status Perangkat (Real-time)</div>
+      <div className="ms-group">
+        <Row icon={<Printer size={20} />} title="Printer terhubung ke" list={printers} extra={p => p.printer}
+          emptyText="Belum ada perangkat yang tersambung ke printer" />
+        <Row icon={<Volume2 size={20} />} title="Suara / alarm dapur di" list={audios}
+          emptyText="Belum ada perangkat pusat audio" />
+        <div className="ms-row">
+          <div className="ms-row-start">
+            <div className="ms-icon-box blue"><Smartphone size={20} /></div>
+            <div className="ms-row-text">
+              <span className="ms-row-label">Nama perangkat ini</span>
+              <input className="sx-input" style={{ marginTop: 6 }} value={draft} onChange={e => setDraft(e.target.value)} placeholder="Contoh: HP Kasir / Tablet Dapur" />
+            </div>
+          </div>
+          <button type="button" className="ms-btn-action primary" disabled={!draft.trim() || draft.trim() === myName} onClick={() => onRename(draft.trim())}>Simpan</button>
+        </div>
+        <div className="ms-row" style={{ display: 'block' }}>
+          <span className="ms-row-label">{peers.length} perangkat online</span>
+          {peers.map(p => (
+            <div key={p.deviceId} className="ms-row-sub" style={{ marginTop: 4 }}>
+              {label(p)} · {p.role}{p.printer ? ' · 🖨 Printer' : ''}{p.audio ? ' · 🔊 Suara' : ''}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 /* ===================== Dashboard (Admin) ===================== */
 /* ===================== Dashboard (Admin) ===================== */
 function DashboardView({ orders, items, onOpenHistory, onOpenQueue }) {
@@ -923,6 +1004,12 @@ export default function App() {
   const [centralAudioDevice, setCentralAudioDevice] = useState(() => read('z_central_audio_device', false));
   const [centralAudioReady, setCentralAudioReady] = useState(false);
   const kitchenAudioRef = useRef(null);
+  // ---- Status perangkat (presence) ----
+  const [deviceId] = useState(() => getDeviceId());
+  const [deviceName, setDeviceName] = useState(() => read('z_device_name', '') || guessDeviceName());
+  const [devicePeers, setDevicePeers] = useState([]);
+  const presenceChRef = useRef(null);
+  const presenceReadyRef = useRef(false);
   const liveChannelRef = useRef(null); // channel realtime, dipakai untuk mengirim sinyal alarm dapur
   const seenKitchenAudioOrders = useRef(new Set());
 
@@ -1447,30 +1534,57 @@ export default function App() {
     });
 
     ch.on('broadcast', { event: 'print_job' }, async ({ payload }) => {
-      // Hanya perangkat yang terhubung BT yang akan mencetak
+      // Hanya perangkat yang benar-benar memiliki koneksi Bluetooth yang boleh mengambil job.
+      if (!payload?.jobId || !Array.isArray(payload.bytesArr)) return;
       if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) return;
+
       try {
-        // Gunakan bytes yang sudah di-encode dari pengirim — tidak perlu encode ulang
-        const uint8 = new Uint8Array(payload.bytesArr);
-        await printViaWebBluetooth(uint8);
-        // Konfirmasi balik ke semua perangkat bahwa sudah dicetak
-        ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId } });
+        await printViaWebBluetooth(new Uint8Array(payload.bytesArr));
+        await ch.send({
+          type: 'broadcast',
+          event: 'print_done',
+          payload: {
+            jobId: payload.jobId,
+            ok: true,
+            printer: globalBleDevice?.name || 'Printer Bluetooth'
+          }
+        });
       } catch (err) {
-        console.warn('Relay print gagal:', err);
+        console.error('Relay print gagal:', err);
+        await ch.send({
+          type: 'broadcast',
+          event: 'print_done',
+          payload: { jobId: payload.jobId, ok: false, error: err?.message || 'Gagal mencetak melalui Bluetooth.' }
+        });
       }
     });
 
     ch.on('broadcast', { event: 'print_done' }, ({ payload }) => {
-      // Perangkat pengirim tahu bahwa job sudah dieksekusi
-      flash(`✓ Dicetak oleh printer Bluetooth (Relay)`, 3000);
+      if (!payload?.jobId) return;
+      const pending = pendingPrintJobs.get(payload.jobId);
+      if (pending) pending.resolve(payload);
     });
 
-    ch.subscribe();
     printRelayChannel = ch;
+    printRelayReady = false;
+    ch.subscribe(status => {
+      if (status === 'SUBSCRIBED') {
+        printRelayReady = true;
+        console.info('Zayga Print Relay siap.');
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        printRelayReady = false;
+        console.warn('Zayga Print Relay tidak siap:', status);
+      }
+    });
 
     return () => {
+      printRelayReady = false;
+      for (const [jobId, pending] of pendingPrintJobs.entries()) {
+        pending.reject(new Error('Koneksi Print Relay terputus. Silakan coba cetak kembali.'));
+        pendingPrintJobs.delete(jobId);
+      }
       supabase.removeChannel(ch);
-      printRelayChannel = null;
+      if (printRelayChannel === ch) printRelayChannel = null;
     };
   }, [user]);
 
@@ -1479,6 +1593,39 @@ export default function App() {
     write('z_drafts', { draftId, drafts: drafts.map(d => d.id === draftId ? { id: draftId, cart, customer, location, notes, discount } : d) });
   }, [cart, customer, location, notes, discount, drafts, draftId, addingToOrder]);
 
+  // ============ Presence: siapa yang terhubung ke printer & suara ============
+  const deviceInfo = {
+    deviceId, deviceName,
+    username: user?.username || null, role: user?.role || null,
+    printer: bleConnected ? (bleDeviceName || 'Printer Bluetooth') : null,
+    audio: !!centralAudioDevice || user?.role === 'Dapur',
+  };
+  const deviceInfoRef = useRef(deviceInfo); deviceInfoRef.current = deviceInfo;
+
+  useEffect(() => {
+    if (!user) return;
+    const ch = supabase.channel('zayga-devices', { config: { presence: { key: deviceId } } });
+    ch.on('presence', { event: 'sync' }, () => {
+      const list = Object.values(ch.presenceState()).map(a => a[a.length - 1]).filter(Boolean);
+      setDevicePeers(list);
+    }).subscribe(async status => {
+      if (status === 'SUBSCRIBED') {
+        presenceReadyRef.current = true;
+        try { await ch.track({ ...deviceInfoRef.current, at: Date.now() }); } catch {}
+      } else presenceReadyRef.current = false;
+    });
+    presenceChRef.current = ch;
+    return () => { presenceReadyRef.current = false; presenceChRef.current = null; supabase.removeChannel(ch); setDevicePeers([]); };
+  }, [user?.username, deviceId]);
+
+  // Kirim ulang status saat printer / audio / nama berubah
+  useEffect(() => {
+    if (presenceReadyRef.current && presenceChRef.current) {
+      Promise.resolve(presenceChRef.current.track({ ...deviceInfoRef.current, at: Date.now() })).catch(() => {});
+    }
+  }, [deviceName, bleConnected, bleDeviceName, centralAudioDevice, user?.role, user?.username]);
+
+  const renameDevice = (name) => { setDeviceName(name); write('z_device_name', name); flash('Nama perangkat disimpan.', 2500); };
   const allNavItems = [
     [LayoutDashboard, 'Dashboard', ['Admin']],
     [ShoppingCart, 'Pesanan', ['Admin', 'Kasir']],
@@ -1785,7 +1932,8 @@ export default function App() {
           'kitchen',
           activePrintUrl
         );
-        await supabase.from('orders').update({ kitchen_printed: true }).eq('id', base.id);
+        const { error: printStatusError } = await supabase.from('orders').update({ kitchen_printed: true }).eq('id', base.id);
+        if (printStatusError) throw new Error(`Tiket tercetak, tetapi status database gagal diperbarui: ${printStatusError.message}`);
         updated = { ...updated, kitchen_printed: true };
         flash(`Tambahan ${locLabel(base.location)} tersimpan & tiket dapur tercetak.`, 6000);
       } catch (err) {
@@ -2045,7 +2193,8 @@ export default function App() {
     try {
       await sendPrint(forPrint(o, 'kitchen'), 'kitchen', printUrlRef.current);
       const fields = { kitchen_printed: true };
-      await supabase.from('orders').update(fields).eq('id', o.id);
+      const { error: updateError } = await supabase.from('orders').update(fields).eq('id', o.id);
+      if (updateError) throw new Error(`Tiket tercetak, tetapi status database gagal diperbarui: ${updateError.message}`);
       setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...fields } : x));
       return true;
     } catch (err) {
@@ -2065,7 +2214,8 @@ export default function App() {
     try {
       await sendPrint(forPrint(o, type), type, printUrlRef.current);
       const updateField = type === 'kitchen' ? { kitchen_printed: true } : { customer_printed: true };
-      await supabase.from('orders').update(updateField).eq('id', o.id);
+      const { error: updateError } = await supabase.from('orders').update(updateField).eq('id', o.id);
+      if (updateError) throw new Error(`Tiket tercetak, tetapi status database gagal diperbarui: ${updateError.message}`);
       setOrders(prev => prev.map(item => item.id === o.id ? { ...item, ...updateField } : item));
       flash(`${type === 'kitchen' ? 'Tiket dapur' : 'Struk pelanggan'} ${o.id} berhasil dicetak.`);
     } catch (err) {
@@ -2847,6 +2997,19 @@ export default function App() {
               <div><p className="eyebrow">{user.role === 'Admin' ? 'PANEL ADMIN' : user.role === 'Dapur' ? 'AREA DAPUR' : 'AREA KASIR'}</p><h2>{page}</h2></div>
             </div>
             <div className="top-right">
+              {(() => {
+                const pr = devicePeers.find(p => p.printer);
+                const au = devicePeers.find(p => p.audio);
+                const nm = p => p ? (p.deviceId === deviceId ? 'HP ini' : p.deviceName) : 'tidak ada';
+                return (
+                  <button type="button" className="hide-mobile" onClick={() => handlePageChange('Pengaturan')}
+                    title="Status perangkat printer & suara"
+                    style={{ border: '1px solid #e2e8f0', background: '#fff', borderRadius: 99, padding: '5px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', color: pr && au ? '#166534' : '#b45309' }}>
+                    🖨 {nm(pr)} · 🔊 {nm(au)}
+                  </button>
+                );
+              })()}
+*/
               <span className="live-dot"></span>
               <span className="date-pill">
                 <Clock size={14} />
@@ -4025,6 +4188,7 @@ export default function App() {
                   </div>
                 </div>
 
+                <DeviceStatusCard peers={devicePeers} myId={deviceId} myName={deviceName} onRename={renameDevice} />
                 {/* Section: Printer & Struk Kasir */}
                 {!isDapur && (
                   <div className="ms-section">
@@ -4067,7 +4231,7 @@ export default function App() {
                             <span className="ms-row-sub">
                               {bleConnected
                                 ? '✓ HP ini menjadi Printer Server — HP lain bisa cetak lewat sini'
-                                : 'HP lain yang punya BT akan mencetak untukmu otomatis'}
+: (devicePeers.find(p => p.printer && p.deviceId !== deviceId) ? `Cetak lewat: ${devicePeers.find(p => p.printer && p.deviceId !== deviceId).deviceName}` : 'Belum ada perangkat dengan printer yang online')}
                             </span>
                           </div>
                         </div>
@@ -4250,46 +4414,46 @@ export default function App() {
         })()}
       </main>
 
-      <nav className="bn">
-        {user.role === 'Dapur' ? (
-          <>
-            <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
-              <ChefHat size={22} /><span>Antrian</span>
-              {siapCount > 0 && <i>{siapCount}</i>}
+    <nav className="bn">
+      {user.role === 'Dapur' ? (
+        <>
+          <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
+            <ChefHat size={22} /><span>Antrian</span>
+            {siapCount > 0 && <i>{siapCount}</i>}
+          </button>
+          <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
+            <Settings size={22} /><span>Pengaturan</span>
+          </button>
+        </>
+      ) : (
+        <>
+          {user.role === 'Admin' && (
+            <button type="button" className={page === 'Dashboard' ? 'on' : ''} onClick={() => handlePageChange('Dashboard')}>
+              <LayoutDashboard size={22} /><span>Dasbor</span>
             </button>
-            <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
-              <Settings size={22} /><span>Pengaturan</span>
+          )}
+          <button type="button" className={page === 'Pesanan' ? 'on' : ''} onClick={() => handlePageChange('Pesanan')}>
+            <ShoppingCart size={22} /><span>Pesanan</span>
+            {cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
+          </button>
+          {user.role === 'Kasir' && (
+            <button type="button" className={page === 'Denah' ? 'on' : ''} onClick={() => handlePageChange('Denah')}>
+              <LayoutGrid size={22} /><span>Denah</span>
             </button>
-          </>
-        ) : (
-          <>
-            {user.role === 'Admin' && (
-              <button type="button" className={page === 'Dashboard' ? 'on' : ''} onClick={() => handlePageChange('Dashboard')}>
-                <LayoutDashboard size={22} /><span>Dasbor</span>
-              </button>
-            )}
-            <button type="button" className={page === 'Pesanan' ? 'on' : ''} onClick={() => handlePageChange('Pesanan')}>
-              <ShoppingCart size={22} /><span>Pesanan</span>
-              {cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
-            </button>
-            {user.role === 'Kasir' && (
-              <button type="button" className={page === 'Denah' ? 'on' : ''} onClick={() => handlePageChange('Denah')}>
-                <LayoutGrid size={22} /><span>Denah</span>
-              </button>
-            )}
-            <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
-              <ChefHat size={22} /><span>Antrian</span>
-              {siapCount > 0 && <i>{siapCount}</i>}
-            </button>
-            <button type="button" className={page === 'Riwayat' ? 'on' : ''} onClick={() => handlePageChange('Riwayat')}>
-              <ClipboardList size={22} /><span>Riwayat</span>
-            </button>
-            <button type="button" className={moreActive ? 'on' : ''} onClick={() => setMoreOpen(true)}>
-              <MenuIcon size={22} /><span>Lainnya</span>
-            </button>
-          </>
-        )}
-      </nav>
+          )}
+          <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
+            <ChefHat size={22} /><span>Antrian</span>
+            {siapCount > 0 && <i>{siapCount}</i>}
+          </button>
+          <button type="button" className={page === 'Riwayat' ? 'on' : ''} onClick={() => handlePageChange('Riwayat')}>
+            <ClipboardList size={22} /><span>Riwayat</span>
+          </button>
+          <button type="button" className={moreActive ? 'on' : ''} onClick={() => setMoreOpen(true)}>
+            <MenuIcon size={22} /><span>Lainnya</span>
+          </button>
+        </>
+      )}
+    </nav>
 
 {moreOpen && (
   <div className="po-ov" onClick={() => setMoreOpen(false)}>

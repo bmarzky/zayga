@@ -956,7 +956,6 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [menuForm, setMenuForm] = useState({ name: '', category: 'Mie', price: '' });
 
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(false);
 
   const [setTab, setSetTab] = useState('printer');
@@ -2626,7 +2625,7 @@ export default function App() {
       return;
     }
     if (label !== 'Pesanan' && addingToOrder) exitAddition();
-    setPage(label); setSidebarOpen(false);
+    setPage(label);
   };
 
   const saveServerPrintUrl = async () => {
@@ -2760,25 +2759,6 @@ export default function App() {
   /* ===================== Aplikasi utama ===================== */
   return (
     <div className="app-shell">
-      {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)}></div>}
-
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <button className="mobile-close-btn" onClick={() => setSidebarOpen(false)}><X /></button>
-        <div className="logo"><span><Coffee size={20} /></span><div><b>ZAYGA</b><small>POINT OF SALE</small></div></div>
-        <div className="nav-label">MENU UTAMA</div>
-        {visibleNavItems.map(([Icon, label]) => (
-          <button key={label} className={'nav-item ' + (page === label ? 'active' : '')} onClick={() => handlePageChange(label)}><Icon size={18} />{label}</button>
-        ))}
-        <div className="side-bottom">
-          <div className="user-chip">
-            <div className="avatar">{user.username[0].toUpperCase()}</div>
-            <div className="user-info"><b>{user.username}</b><small>{user.role}</small></div>
-            <button className="icon-btn" title="Keluar" onClick={logoutNow}><LogOut size={16} /></button>
-          </div>
-          <p className="tiny">Zayga POS · Supabase Cloud</p>
-        </div>
-      </aside>
-
       {/* [FIX] kelas main--overlay menaikkan z-index <main> saat sheet meja/catatan/diskon terbuka,
           supaya sheet tampil di DEPAN keranjang & navigasi bawah (bukan tertimpa). */}
       <main className={'main' + ((infoOpen || noteItem || discOpen) ? ' main--overlay' : '')}>
@@ -2788,16 +2768,16 @@ export default function App() {
         {page !== 'Antrian' && (
           <header className="topbar">
             <div className="topbar-left">
-              <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}><MenuIcon size={24} /></button>
+              <div className="topbar-logo"><Coffee size={18} /></div>
               <div><p className="eyebrow">{user.role === 'Admin' ? 'PANEL ADMIN' : user.role === 'Dapur' ? 'AREA DAPUR' : 'AREA KASIR'}</p><h2>{page}</h2></div>
             </div>
             <div className="top-right">
               <span className="live-dot"></span>
-              <span className="hide-mobile">{online ? 'Supabase Online' : 'Offline'}</span>
               <span className="date-pill">
                 <Clock size={14} />
                 <span className="hide-mobile">{new Date().toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
               </span>
+              <button className="icon-btn topbar-logout" title="Keluar" onClick={logoutNow}><LogOut size={18} /></button>
             </div>
           </header>
         )}
@@ -4181,28 +4161,53 @@ export default function App() {
         {user.role === 'Dapur' ? (
           <>
             <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
-              <ChefHat size={20} />Antrian
+              <ChefHat size={22} /><span>Antrian</span>
               {siapCount > 0 && <i>{siapCount}</i>}
             </button>
             <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
-              <Settings size={20} />Pengaturan
+              <Settings size={22} /><span>Pengaturan</span>
+            </button>
+          </>
+        ) : user.role === 'Admin' ? (
+          <>
+            <button type="button" className={page === 'Dashboard' ? 'on' : ''} onClick={() => handlePageChange('Dashboard')}>
+              <LayoutDashboard size={22} /><span>Dasbor</span>
+            </button>
+            <button type="button" className={page === 'Pesanan' ? 'on' : ''} onClick={() => handlePageChange('Pesanan')}>
+              <ShoppingCart size={22} /><span>Pesanan</span>
+              {cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
+            </button>
+            <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
+              <ChefHat size={22} /><span>Antrian</span>
+              {siapCount > 0 && <i>{siapCount}</i>}
+            </button>
+            <button type="button" className={page === 'Kelola Menu' ? 'on' : ''} onClick={() => handlePageChange('Kelola Menu')}>
+              <Utensils size={22} /><span>Menu</span>
+            </button>
+            <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
+              <Settings size={22} /><span>Pengaturan</span>
             </button>
           </>
         ) : (
+          /* Kasir */
           <>
-            {['Pesanan', 'Denah', 'Antrian', 'Riwayat'].map(l => {
-              const it = visibleNavItems.find(n => n[1] === l);
-              if (!it) return null;
-              const Icon = it[0];
-              return (
-                <button key={l} type="button" className={page === l ? 'on' : ''} onClick={() => handlePageChange(l)}>
-                  <Icon size={20} />{l}
-                  {l === 'Antrian' && siapCount > 0 && <i>{siapCount}</i>}
-                  {l === 'Pesanan' && cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
-                </button>
-              );
-            })}
-            <button type="button" onClick={() => setSidebarOpen(true)}><MenuIcon size={20} />Lainnya</button>
+            <button type="button" className={page === 'Pesanan' ? 'on' : ''} onClick={() => handlePageChange('Pesanan')}>
+              <ShoppingCart size={22} /><span>Pesanan</span>
+              {cartQty > 0 && !addingToOrder && <i style={{ background: '#2563eb' }}>{cartQty}</i>}
+            </button>
+            <button type="button" className={page === 'Denah' ? 'on' : ''} onClick={() => handlePageChange('Denah')}>
+              <LayoutGrid size={22} /><span>Denah</span>
+            </button>
+            <button type="button" className={page === 'Antrian' ? 'on' : ''} onClick={() => handlePageChange('Antrian')}>
+              <ChefHat size={22} /><span>Antrian</span>
+              {siapCount > 0 && <i>{siapCount}</i>}
+            </button>
+            <button type="button" className={page === 'Riwayat' ? 'on' : ''} onClick={() => handlePageChange('Riwayat')}>
+              <ClipboardList size={22} /><span>Riwayat</span>
+            </button>
+            <button type="button" className={page === 'Pengaturan' ? 'on' : ''} onClick={() => handlePageChange('Pengaturan')}>
+              <Settings size={22} /><span>Pengaturan</span>
+            </button>
           </>
         )}
       </nav>

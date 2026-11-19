@@ -48,35 +48,68 @@ button.primary.large,.po-go,.pay2-submit,.mv-move{min-height:54px;font-size:1rem
 .icon-btn:hover{background:var(--bad-s);color:var(--bad)}
 
 /* ============ Kerangka aplikasi ============ */
-.app-shell{display:flex;height:100vh;height:100dvh;width:100%;overflow:hidden;position:relative}
-.main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
-.content{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:24px;background:var(--bg)}
+.app-shell{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100%;overflow:hidden;position:relative}
+.main{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.content{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px;padding-bottom:calc(72px + var(--safe-b) + 8px);background:var(--bg)}
 .offline{display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--warn-s);color:var(--warn);font-size:.82rem;font-weight:600;border-bottom:1px solid var(--warn-b)}
 
-.sidebar{width:256px;flex:none;background:var(--sf);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:20px 16px;overflow-y:auto;z-index:1000}
-.logo{display:flex;align-items:center;gap:12px;margin-bottom:28px;padding:0 4px;position:relative}
+/* sidebar dihapus — tidak digunakan */
+.sidebar,.nav-label,.nav-item,.side-bottom,.user-chip,.mobile-close-btn,.hamburger-btn,.backdrop{display:none!important}
 
-.logo span{width:38px;height:38px;border-radius:var(--r-md);background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.1rem;box-shadow:0 2px 6px rgba(37,99,235,.25)}
-.logo b{display:block;font-size:1.05rem;letter-spacing:-.01em;line-height:1.1;color:var(--ink)}
-.logo small{font-size:.68rem;color:var(--mut);font-weight:700;letter-spacing:.06em}
-.nav-label{font-size:.72rem;font-weight:700;color:var(--mut);letter-spacing:.06em;margin:0 8px 8px}
-.nav-item{display:flex;align-items:center;gap:12px;width:100%;min-height:46px;padding:0 14px;margin-bottom:4px;border-radius:var(--r-md);color:var(--ink2);font-weight:600;text-align:left}
-.nav-item:hover{background:var(--p-s);color:var(--p)}
-.nav-item.active{background:var(--p-s);color:var(--p);border:1px solid var(--p-b);font-weight:700}
-.side-bottom{margin-top:auto;padding-top:16px;border-top:1px solid var(--line)}
-.user-chip{display:flex;align-items:center;gap:12px}
-.avatar,.st-av{flex:none;width:40px;height:40px;border-radius:50%;background:var(--p-s);color:var(--p-d);border:1px solid var(--p-b);font-weight:800;display:flex;align-items:center;justify-content:center}
-.user-info b{display:block;font-size:.92rem;line-height:1.2}
-.user-info small{color:var(--mut);font-size:.75rem}
-.mobile-close-btn,.hamburger-btn,.backdrop{display:none}
+.topbar{height:56px;min-height:56px;flex:none;background:var(--sf);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 16px;gap:10px;box-shadow:0 1px 3px rgba(0,0,0,.04);padding-top:var(--safe-t)}
+.topbar-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.topbar-logo{width:32px;height:32px;border-radius:var(--r-md);background:var(--p);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 6px rgba(37,99,235,.25)}
+.topbar-left h2{font-size:1.1rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-left .eyebrow{font-size:.64rem;margin-bottom:1px}
+.top-right{display:flex;align-items:center;gap:8px;font-size:.84rem;color:var(--mut);font-weight:500;flex-shrink:0}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px #dcfce7;flex-shrink:0}
+.date-pill{display:none}
+.topbar-logout{color:var(--mut);width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:var(--r-sm)}
+.topbar-logout:hover{background:var(--bad-s);color:var(--bad)}
 
-.topbar{height:64px;min-height:64px;flex:none;background:var(--sf);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px;gap:12px;box-shadow:0 1px 3px rgba(0,0,0,.03)}
-.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}
-.top-right{display:flex;align-items:center;gap:10px;font-size:.84rem;color:var(--mut);font-weight:500}
-.live-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px #dcfce7}
-.date-pill{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:99px;background:var(--bg);border:1px solid var(--line);font-weight:600;color:var(--ink2)}
-
-.bn{display:none}
+/* ============ Bottom Navigation Bar ============ */
+.bn{
+  position:fixed;bottom:0;left:0;right:0;
+  display:flex;align-items:stretch;
+  background:var(--sf);
+  border-top:1px solid var(--line);
+  box-shadow:0 -2px 12px rgba(0,0,0,.07);
+  padding-bottom:var(--safe-b);
+  z-index:200;
+  height:calc(60px + var(--safe-b));
+}
+.bn button{
+  flex:1;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;
+  font-size:.62rem;font-weight:600;letter-spacing:.01em;
+  color:var(--mut);
+  position:relative;
+  min-width:0;
+  padding:6px 2px;
+  border-radius:0;
+  transition:color .15s,background .15s;
+}
+.bn button span{
+  font-size:.62rem;font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:56px;
+}
+.bn button svg{transition:transform .15s}
+.bn button:hover{background:var(--p-s);color:var(--p)}
+.bn button.on{color:var(--p)}
+.bn button.on svg{transform:scale(1.08)}
+.bn button.on::after{
+  content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);
+  width:32px;height:3px;border-radius:0 0 3px 3px;
+  background:var(--p);
+}
+.bn i{
+  position:absolute;top:5px;right:calc(50% - 18px);
+  min-width:17px;height:17px;padding:0 4px;
+  border-radius:99px;background:#ef4444;color:#fff;
+  font-size:.62rem;font-weight:800;font-style:normal;
+  display:flex;align-items:center;justify-content:center;
+}
 
 /* ============ Kartu & tabel ============ */
 .panel,.st-card{background:var(--sf);border:1px solid var(--line);border-radius:var(--r-lg);padding:20px;box-shadow:var(--shadow)}

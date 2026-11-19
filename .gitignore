@@ -5,4 +5,3 @@ dist
 
 # Local HTTPS certificates
 certs/
-vite.config.js

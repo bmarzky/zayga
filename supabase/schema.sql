@@ -81,6 +81,9 @@ INSERT INTO menu_items (id, name, category, price, active) VALUES
 (50, 'Nipis Madu', 'Soft Drink', 5000, true)
 ON CONFLICT (id) DO NOTHING;
 
+-- Sinkronkan sequence BIGSERIAL agar penambahan menu baru berikutnya otomatis mendapatkan id > 50
+SELECT setval(pg_get_serial_sequence('menu_items', 'id'), coalesce(max(id), 1)) FROM menu_items;
+
 
 -- ==========================================
 -- 3. TABEL ORDERS (TRANSAKSI / PESANAN)

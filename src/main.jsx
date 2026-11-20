@@ -4486,7 +4486,7 @@ export default function App() {
                         <div className="ms-icon-box slate"><Smartphone size={20} /></div>
                         <div className="ms-row-text">
                           <span className="ms-row-label">Zayga POS Mobile</span>
-                          <span className="ms-row-sub">v1.2 · Mode PWA Cloud Real-time</span>
+                          <span className="ms-row-sub">v1.3 · Mode PWA Cloud Real-time</span>
                         </div>
                       </div>
                       <span className="ms-badge admin">Active</span>

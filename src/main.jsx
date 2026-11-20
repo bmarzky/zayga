@@ -155,19 +155,17 @@ const guessDeviceName = () => {
   return `${os} · ${br}`;
 };
 
-// [FIX #4] ID order: potongan waktu (base36) + 3 karakter acak kriptografis.
+// ID order: ZYG- diikuti 6 angka acak, contoh ZYG-482913.
 const genOrderId = () => {
-  const t = Date.now().toString(36).toUpperCase().slice(-6);
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let r = '';
+  let n;
   try {
-    const a = new Uint8Array(3);
+    const a = new Uint32Array(1);
     crypto.getRandomValues(a);
-    a.forEach(n => { r += chars[n % chars.length]; });
+    n = a[0] % 1000000;
   } catch {
-    for (let i = 0; i < 3; i++) r += chars[Math.floor(Math.random() * chars.length)];
+    n = Math.floor(Math.random() * 1000000);
   }
-  return 'ZG' + t + r;
+  return 'ZYG-' + String(n).padStart(6, '0');
 };
 
 // Nomor antrian harian: urutan pesanan pada tanggal yang sama berdasarkan waktu dibuat (001, 002, ...).
@@ -183,6 +181,22 @@ const computeQueueNo = (o, list) => {
   return n;
 };
 const fmtQueue = n => String(n || 0).padStart(3, '0');
+// Peta nomor antrian untuk SEMUA pesanan sekaligus (id -> nomor).
+// Aturannya sama persis dengan computeQueueNo, jadi nomor di Riwayat = nomor di tiket dapur.
+const buildQueueMap = (list) => {
+  const byDate = {};
+  for (const o of (list || [])) (byDate[o.date] = byDate[o.date] || []).push(o);
+  const map = new Map();
+  Object.values(byDate).forEach(arr => {
+    arr.slice().sort((a, b) => {
+      const ta = Date.parse(a.created_at || '') || 0, tb = Date.parse(b.created_at || '') || 0;
+      return ta - tb || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0);
+    }).forEach((o, i) => map.set(o.id, i + 1));
+  });
+  return map;
+};
+
+const queueBadgeStyle = { display: 'inline-flex', alignItems: 'center', padding: '2px 8px', borderRadius: 6, background: '#111827', color: '#fff', fontSize: '.72rem', fontWeight: 800, letterSpacing: '.04em', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' };
 
 // Gabungkan hasil server dengan pesanan yang masih menunggu di antrean offline
 const withQueue = (data) => {
@@ -464,14 +478,14 @@ const sendPrintJob = async (order, type, url) => {
 };
 
 /* ===================== Komponen Pendukung ===================== */
-function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
+function OrdersTable({ orders, printOrder, onSelectOrder, onDelete, queueMap }) {
   const safeOrders = Array.isArray(orders) ? orders : [];
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>Status</th><th>Cetak</th><th>Pelanggan</th><th>Lokasi</th><th>Waktu</th><th>Total</th><th>Metode</th><th>Aksi / Cetak</th>
+            <th>Antrian</th><th>ID</th><th>Status</th><th>Cetak</th><th>Pelanggan</th><th>Lokasi</th><th>Waktu</th><th>Total</th><th>Metode</th><th>Aksi / Cetak</th>
           </tr>
         </thead>
         <tbody>
@@ -480,6 +494,7 @@ function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
             const st = statusOf(o);
             return (
               <tr key={o.id} style={{ cursor: 'pointer', background: isFullyPrinted ? 'transparent' : '#fefce8' }} onClick={() => onSelectOrder(o)}>
+                <td data-label="Antrian"><span style={queueBadgeStyle}>{queueMap?.get(o.id) ? fmtQueue(queueMap.get(o.id)) : '-'}</span></td>
                 <td data-label="ID"><b className="mono">{o.id}</b>{o._queued && <span className="cat-badge" style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e' }}>Antre</span>}</td>
                 <td data-label="Status"><span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '0.72rem', fontWeight: 700, background: STATUS_STYLE[st][0], color: STATUS_STYLE[st][1] }}>{st}</span></td>
                 <td data-label="Cetak">
@@ -508,7 +523,7 @@ function OrdersTable({ orders, printOrder, onSelectOrder, onDelete }) {
               </tr>
             );
           })}
-          {safeOrders.length === 0 && <tr><td colSpan="9" className="empty-table" style={{ textAlign: 'center', padding: '2rem' }}>Belum ada transaksi.</td></tr>}
+          {safeOrders.length === 0 && <tr><td colSpan="10" className="empty-table" style={{ textAlign: 'center', padding: '2rem' }}>Belum ada transaksi.</td></tr>}
         </tbody>
       </table>
     </div>
@@ -1122,6 +1137,7 @@ export default function App() {
   const [cashierTab, setCashierTab] = useState('Siap'); // 'Siap' | 'Dimasak' | 'Baru' | 'Semua'
   const [cashierLayout, setCashierLayout] = useState(() => read('z_cashier_layout', 'cards')); // 'cards' | 'compact'
   const [histFilter, setHistFilter] = useState('Hari ini');
+  const [histQuery, setHistQuery] = useState('');
   const [shiftWho, setShiftWho] = useState('');
   const [shiftForm, setShiftForm] = useState({ opening: '', counted: '', note: '' });
   const [, setTick] = useState(0);
@@ -1695,6 +1711,8 @@ export default function App() {
 
   const todays = orders.filter(o => o?.date === today);
   const siapCount = todays.filter(o => statusOf(o) !== 'Diantar' && (o?.items || []).some(i => itemSt(i) === 'Siap')).length;
+  const queueMap = useMemo(() => buildQueueMap(orders), [orders]);
+  const qLabel = o => fmtQueue(queueMap.get(o?.id) || computeQueueNo(o, orders));
 
   const favNames = useMemo(() => {
     const c = {};
@@ -3914,7 +3932,12 @@ export default function App() {
 
         {/* ================= RIWAYAT ================= */}
         {page === 'Riwayat' && user.role !== 'Dapur' && (() => {
-          const list = histFilter === 'Hari ini' ? todays : histFilter === 'Belum lunas' ? orders.filter(o => remainOf(o) > 0) : orders;
+          const baseList = histFilter === 'Hari ini' ? todays : histFilter === 'Belum lunas' ? orders.filter(o => remainOf(o) > 0) : orders;
+          const hq = histQuery.trim().toLowerCase().replace(/^(no\.?|antrian|#)\s*/, '');
+          const list = !hq ? baseList : baseList.filter(o => {
+            if (/^\d+$/.test(hq)) return (queueMap.get(o.id) || 0) === Number(hq) || normLoc(o.location) === hq || (hq.length >= 4 && String(o.id).includes(hq)); // angka pendek = antrian/meja, angka 4+ digit juga mencari kode struk
+            return [o.id, o.customer, locLabel(o.location), o.payment].some(v => String(v || '').toLowerCase().includes(hq));
+          });
           return (
             <div className="content history-page">
               <div className="panel history-panel">
@@ -3930,6 +3953,10 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                <div className="po-search" style={{ marginBottom: 10 }}>
+                  <Search size={17} />
+                  <input placeholder="Cari no. antrian (mis. 12), ID, pelanggan, meja..." value={histQuery} onChange={e => setHistQuery(e.target.value)} />
+                </div>
                 <div className="po-cats" style={{ marginBottom: 12 }}>
                   {['Hari ini', 'Belum lunas', 'Semua'].map(f => <button key={f} type="button" className={histFilter === f ? 'on' : ''} onClick={() => setHistFilter(f)}>{f}</button>)}
                 </div>
@@ -3942,6 +3969,7 @@ export default function App() {
                       <article className="history-order-card" key={o.id} onClick={() => setSelectedOrder(o)}>
                         <div className="history-card-top">
                           <div className="history-card-top-left">
+                            <span style={queueBadgeStyle} title="Nomor antrian (sama dengan tiket dapur)">No. {qLabel(o)}</span>
                             <span className="history-loc-badge" title={locLabel(o.location)}>
                               <MapPin size={12} />
                               <span className="history-loc-text">{locLabel(o.location)}</span>
@@ -3973,7 +4001,7 @@ export default function App() {
                   {!list.length && <div className="history-empty"><ClipboardList size={32} /><b>Belum ada catatan transaksi</b><small>Transaksi yang masuk akan tersimpan di sini.</small></div>}
                 </div>
                 <div className="history-desktop-table">
-                  <OrdersTable orders={list} printOrder={printOrder} onSelectOrder={setSelectedOrder} onDelete={user.role === 'Admin' ? deleteOrder : null} />
+                  <OrdersTable orders={list} printOrder={printOrder} onSelectOrder={setSelectedOrder} onDelete={user.role === 'Admin' ? deleteOrder : null} queueMap={queueMap} />
                 </div>
               </div>
             </div>
@@ -4563,6 +4591,7 @@ export default function App() {
               <div className="dt-body">
                 <div>
                   <div className="dt-chips">
+                    <span className="dt-chip" style={{ background: '#111827', color: '#fff' }}>Antrian {qLabel(o)}</span>
                     {remain > 0
                       ? <span className="dt-chip" style={{ background: '#fee2e2', color: '#991b1b' }}>Belum lunas</span>
                       : <span className="dt-chip" style={{ background: '#dcfce7', color: '#166534' }}>Lunas</span>}

@@ -1077,6 +1077,9 @@ export default function App() {
     Hangat: { biasa: 0, susu: 0 },
     Dingin: { biasa: 0, susu: 0 }
   });
+  const [variantMilk, setVariantMilk] = useState(false);
+  const [variantNum, setVariantNum] = useState(1);
+  const [variantAdded, setVariantAdded] = useState([]); // ringkasan yang sudah ditambahkan di popup ini
 
   const [moveOrder, setMoveOrder] = useState(null);
   const [moveTarget, setMoveTarget] = useState('');
@@ -1811,7 +1814,8 @@ export default function App() {
     if (item.sold_out) { flash(`${item.name} sedang habis.`, 2500); return; }
     if (item.stock != null && qtyOf(item) >= item.stock) { flash(`Stok ${item.name} tinggal ${item.stock}.`, 3000); return; }
     if (item.category === 'Minuman' || item.category === 'Kopi') {
-      setVariantTemp(''); setVariantQty({ Panas: { biasa: 0, susu: 0 }, Hangat: { biasa: 0, susu: 0 }, Dingin: { biasa: 0, susu: 0 } }); setSelectedItemForVariant(item);
+      setVariantTemp(''); setVariantMilk(false); setVariantNum(1); setVariantAdded([]);
+      setSelectedItemForVariant(item);
     } else addToCartDirect(item, false);
   };
 
@@ -1830,26 +1834,19 @@ export default function App() {
     });
   };
 
-  const addVariantBatch = () => {
+  const addVariantOne = () => {
     const item = selectedItemForVariant;
     if (!item) return;
-    const temperatures = ['Panas', 'Hangat', 'Dingin'];
-    const variants = temperatures.flatMap(temperature => {
-      const row = variantQty[temperature] || {};
-      const label = temperature;
-      return [
-        [label, false, Number(row.biasa || 0)],
-        [label, true, Number(row.susu || 0)]
-      ].filter(([, , qty]) => qty > 0);
-    });
-    const totalQty = variants.reduce((sum, [, , qty]) => sum + qty, 0);
-    if (!totalQty) { flash('Tentukan jumlah minuman terlebih dahulu.', 2500); return; }
-    if (item.stock != null && qtyOf(item) + totalQty > item.stock) {
+    if (!variantTemp) { flash('Pilih suhu dulu: Panas, Hangat, atau Dingin.', 2500); return; }
+    const qty = Math.max(1, Number(variantNum) || 1);
+    if (item.stock != null && qtyOf(item) + qty > item.stock) {
       flash(`Stok ${item.name} hanya tersisa ${Math.max(0, item.stock - qtyOf(item))}.`, 3500);
       return;
     }
-    variants.forEach(([temperature, withMilk, qty]) => addToCartDirect(item, withMilk, temperature, qty));
-    setSelectedItemForVariant(null);
+    addToCartDirect(item, variantMilk, variantTemp, qty);
+    setVariantAdded(list => [...list, `${qty}× ${variantTemp}${variantMilk ? ' + Susu' : ''}`]);
+    // reset supaya pilihan berikutnya harus disengaja
+    setVariantTemp(''); setVariantMilk(false); setVariantNum(1);
   };
 
   const openBakso = () => { setBaksoPrice(''); setBaksoName(''); setBaksoOpen(true); };
@@ -4978,75 +4975,86 @@ export default function App() {
       })()}
 
       {/* ================= MODAL VARIAN / BAKSO ================= */}
-      {selectedItemForVariant && (
-        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setSelectedItemForVariant(null); }}>
-          <div className="modal" style={{ width: 'calc(100% - 24px)', maxWidth: '460px', maxHeight: 'min(90dvh, 760px)', overflowY: 'auto', padding: 'clamp(14px, 4vw, 20px)' }}>
-            <div style={{ textAlign: 'left' }}>
-              <p className="eyebrow">PILIH VARIAN & JUMLAH</p>
-              <h2 style={{ marginBottom: 4 }}>{selectedItemForVariant.name}</h2>
-              <p className="muted" style={{ margin: '0 0 14px', fontSize: '.84rem' }}>Atur jumlah tanpa susu dan pakai susu secara terpisah untuk setiap suhu.</p>
+      {selectedItemForVariant && (() => {
+        const item = selectedItemForVariant;
+        const extra = variantMilk ? 3000 : 0;
+        const num = Math.max(1, Number(variantNum) || 1);
+        const temps = [
+          ['Panas', Flame, '#ea580c', '#fff7ed'],
+          ['Hangat', Coffee, '#d97706', '#fffbeb'],
+          ['Dingin', Snowflake, '#0284c7', '#f0f9ff']
+        ];
+        const bigBtn = (on, color, bg) => ({
+          minHeight: 64, borderRadius: 14, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
+          border: `2.5px solid ${on ? color : '#e2e8f0'}`, background: on ? bg : '#fff', color: on ? color : '#475569',
+          fontWeight: 800, fontSize: '.95rem', cursor: 'pointer'
+        });
+        return (
+          <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setSelectedItemForVariant(null); }}>
+            <div className="modal" style={{ width: 'calc(100% - 24px)', maxWidth: 440, maxHeight: 'min(92dvh, 760px)', overflowY: 'auto', padding: 'clamp(16px, 4vw, 22px)' }}>
+              <button className="modal-close" onClick={() => setSelectedItemForVariant(null)} aria-label="Tutup"><X /></button>
+              <p className="eyebrow">TAMBAH MINUMAN</p>
+              <h2 style={{ marginBottom: 2, paddingRight: 44 }}>{item.name}</h2>
+              <p className="muted" style={{ margin: '0 0 14px', fontSize: '.84rem' }}>{money(item.price)} per gelas</p>
+
+              <span className="pay2-label" style={{ marginTop: 0 }}>1. Pilih suhu</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                {temps.map(([t, Icon, color, bg]) => (
+                  <button key={t} type="button" onClick={() => setVariantTemp(t)} style={bigBtn(variantTemp === t, color, bg)}>
+                    <Icon size={22} />{t}
+                  </button>
+                ))}
+              </div>
+
+              <span className="pay2-label">2. Pakai susu?</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                <button type="button" onClick={() => setVariantMilk(false)} style={bigBtn(!variantMilk, '#2563eb', '#eff6ff')}>
+                  Tanpa susu
+                </button>
+                <button type="button" onClick={() => setVariantMilk(true)} style={bigBtn(variantMilk, '#2563eb', '#eff6ff')}>
+                  Pakai susu
+                  <small style={{ fontWeight: 600, fontSize: '.72rem' }}>+{money(3000)}</small>
+                </button>
+              </div>
+
+              <span className="pay2-label">3. Jumlah</span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 22 }}>
+                <button type="button" aria-label="Kurangi" disabled={num <= 1} onClick={() => setVariantNum(Math.max(1, num - 1))}
+                  style={{ width: 58, height: 58, borderRadius: '50%', border: '2px solid #cbd5e1', background: '#fff', display: 'grid', placeItems: 'center', opacity: num <= 1 ? .4 : 1 }}>
+                  <Minus size={24} />
+                </button>
+                <b style={{ minWidth: 48, textAlign: 'center', fontSize: '2rem', fontVariantNumeric: 'tabular-nums' }}>{num}</b>
+                <button type="button" aria-label="Tambah" onClick={() => setVariantNum(num + 1)}
+                  style={{ width: 58, height: 58, borderRadius: '50%', border: '2px solid #2563eb', background: '#2563eb', color: '#fff', display: 'grid', placeItems: 'center' }}>
+                  <Plus size={24} />
+                </button>
+              </div>
+
+              <div style={{ marginTop: 16, padding: '10px 12px', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: '.88rem', color: '#334155', fontWeight: 600 }}>
+                  {variantTemp ? `${num}× ${variantTemp}${variantMilk ? ' + Susu' : ''}` : 'Pilih suhu dulu'}
+                </span>
+                <b style={{ fontSize: '1.05rem' }}>{money((item.price + extra) * num)}</b>
+              </div>
+
+              <button className="primary full large" disabled={!variantTemp} style={{ minHeight: 54, marginTop: 12 }} onClick={addVariantOne}>
+                <Plus size={18} /> Tambah ke Keranjang
+              </button>
+
+              {variantAdded.length > 0 && (
+                <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 12, background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', fontSize: '.82rem' }}>
+                  <b style={{ display: 'block', marginBottom: 4 }}>✓ Sudah masuk keranjang:</b>
+                  {variantAdded.map((a, i) => <div key={i}>{a}</div>)}
+                </div>
+              )}
+
+              <button className="po-go alt" style={{ width: '100%', marginTop: 10 }} onClick={() => setSelectedItemForVariant(null)}>
+                {variantAdded.length > 0 ? 'Selesai' : 'Batal'}
+              </button>
             </div>
-            <div style={{ display: 'grid', gap: 10 }}>
-              {[
-                ['Panas', Flame, '#ea580c', '#fff7ed'],
-                ['Hangat', Coffee, '#d97706', '#fffbeb'],
-                ['Dingin', Snowflake, '#0284c7', '#f0f9ff']
-              ].map(([t, Icon, color, bg]) => {
-                const row = variantQty[t] || { biasa: 0, susu: 0 };
-                const plain = Number(row.biasa || 0);
-                const milk = Number(row.susu || 0);
-                const total = plain + milk;
-                const counter = (label, key, qty, extra = 0) => (
-                  <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 9px', borderRadius: 10, background: '#fff', border: '1px solid #e2e8f0' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <b style={{ display: 'block', fontSize: '.82rem', color: '#334155' }}>{label}</b>
-                      <small style={{ color: '#64748b', fontSize: '.72rem' }}>{money(selectedItemForVariant.price + extra)} / gelas</small>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexShrink: 0 }}>
-                      <button type="button" aria-label={`Kurangi ${t} ${label}`} disabled={qty <= 0} onClick={() => setVariantQty(v => ({ ...v, [t]: { ...(v[t] || { biasa: 0, susu: 0 }), [key]: Math.max(0, Number((v[t] || {})[key] || 0) - 1) } }))} style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid #cbd5e1', background: '#fff', display: 'grid', placeItems: 'center', opacity: qty <= 0 ? .4 : 1 }}><Minus size={15} /></button>
-                      <b style={{ minWidth: 17, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{qty}</b>
-                      <button type="button" aria-label={`Tambah ${t} ${label}`} onClick={() => setVariantQty(v => ({ ...v, [t]: { ...(v[t] || { biasa: 0, susu: 0 }), [key]: Number((v[t] || {})[key] || 0) + 1 } }))} style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid #cbd5e1', background: '#fff', display: 'grid', placeItems: 'center' }}><Plus size={15} /></button>
-                    </div>
-                  </div>
-                );
-                return (
-                  <div key={t} style={{ padding: 10, borderRadius: 13, border: `1.5px solid ${total ? color : '#e2e8f0'}`, background: total ? bg : '#fff' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, color: total ? color : '#334155' }}>
-                      <Icon size={19} />
-                      <b style={{ fontSize: '.92rem' }}>{t}</b>
-                      <span style={{ marginLeft: 'auto', fontSize: '.75rem', color: '#64748b' }}>{total} gelas</span>
-                    </div>
-                    <div style={{ display: 'grid', gap: 7 }}>
-                      {counter('Tanpa susu', 'biasa', plain)}
-                      {counter('Pakai susu', 'susu', milk, 3000)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {(() => {
-              const rows = Object.values(variantQty);
-              const plainQty = rows.reduce((sum, row) => sum + Number(row.biasa || 0), 0);
-              const milkQty = rows.reduce((sum, row) => sum + Number(row.susu || 0), 0);
-              const totalQty = plainQty + milkQty;
-              const totalPrice = plainQty * selectedItemForVariant.price + milkQty * (selectedItemForVariant.price + 3000);
-              return (
-                <>
-                  <div style={{ marginTop: 14, padding: '12px 2px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                    <div>
-                      <small style={{ display: 'block', color: '#64748b' }}>Total minuman</small>
-                      <b style={{ fontSize: '1.05rem' }}>{totalQty} gelas <span style={{ fontSize: '.75rem', color: '#64748b', fontWeight: 500 }}>({plainQty} tanpa susu, {milkQty} pakai susu)</span></b>
-                    </div>
-                    <b style={{ fontSize: '1.05rem', textAlign: 'right' }}>{money(totalPrice)}</b>
-                  </div>
-                  <button className="primary full large" disabled={totalQty === 0} style={{ minHeight: 48 }} onClick={addVariantBatch}>Tambahkan ke Keranjang</button>
-                </>
-              );
-            })()}
-            <button className="text-btn" style={{ width: '100%', minHeight: 44, marginTop: 4 }} onClick={() => setSelectedItemForVariant(null)}>Batal</button>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {baksoOpen && (
         <div className="modal-backdrop">

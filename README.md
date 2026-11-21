@@ -1,278 +1,262 @@
 # Zayga POS
 
-Zayga POS adalah sistem kasir (*Point of Sale*) berbasis web yang dirancang untuk membantu operasional kedai makanan dan minuman. Sistem ini menyediakan pengelolaan menu, transaksi, meja, pembayaran, serta pemantauan pesanan dapur secara terintegrasi.
+Zayga POS adalah aplikasi kasir (Point of Sale) berbasis web untuk kedai makanan dan minuman. Aplikasi ini mencakup pencatatan pesanan, denah meja, pembayaran, antrian dapur, pencetakan struk, dan laporan penjualan dalam satu sistem.
 
-Zayga POS menggunakan React sebagai antarmuka aplikasi dan Supabase sebagai layanan backend untuk penyimpanan data serta sinkronisasi secara real-time. Sistem dapat diakses melalui perangkat laptop maupun ponsel selama terhubung ke jaringan yang sama atau memiliki akses internet.
+Antarmuka dibuat dengan React, sedangkan penyimpanan data dan sinkronisasi real-time memakai Supabase. Aplikasi dapat dipakai dari laptop maupun ponsel, dan dapat dipasang sebagai PWA.
 
-## Fitur Utama
+## Daftar Isi
 
-### 1. Kasir dan Pengelolaan Pesanan
+- [Fitur](#fitur)
+- [Peran Pengguna](#peran-pengguna)
+- [Alur Kerja](#alur-kerja)
+- [Teknologi](#teknologi)
+- [Persyaratan](#persyaratan)
+- [Instalasi](#instalasi)
+- [Konfigurasi Database](#konfigurasi-database)
+- [Konfigurasi Perangkat](#konfigurasi-perangkat)
+- [Struktur Proyek](#struktur-proyek)
+- [Catatan Keamanan](#catatan-keamanan)
+- [Lisensi](#lisensi)
 
-- Menampilkan katalog menu makanan dan minuman.
-- Mengelompokkan menu berdasarkan kategori.
-- Menambahkan, mengubah, dan menghapus item dari pesanan.
-- Mendukung pilihan varian minuman, seperti panas, hangat, dan dingin.
-- Mendukung tambahan pilihan atau biaya berdasarkan varian menu.
-- Mendukung pembuatan pesanan bakso dengan komposisi dan harga khusus.
-- Menambahkan item ke pesanan yang sudah berjalan.
-- Mengelola beberapa pesanan berdasarkan meja.
-- Menyimpan pesanan yang belum diselesaikan pembayarannya.
-- Menyelesaikan transaksi dan memperbarui status pembayaran.
+## Fitur
 
-### 2. Pengelolaan Meja
+### Pesanan
 
-- Menyediakan denah meja interaktif dengan nomor meja 01–37.
-- Menampilkan status meja berdasarkan kondisi pesanan.
-- Mempermudah kasir memilih meja melalui tampilan denah.
-- Mendukung pencatatan lokasi khusus, seperti dekat jendela, depan kasir, atau teras.
-- Mendukung pencatatan nama pelanggan sebagai informasi tambahan.
-- Memindahkan pesanan dari satu meja ke meja lainnya.
-- Menggabungkan pesanan dari beberapa meja.
-- Mendukung pengelolaan dan pemisahan tagihan sesuai kebutuhan operasional.
+- Katalog menu dengan kategori, pencarian, dan tab Favorit (menu yang paling sering dipesan).
+- Pilihan suhu minuman (Panas, Hangat, Dingin) dan tambahan susu dengan biaya tambahan, dalam satu popup yang sederhana: pilih suhu, pilih susu, atur jumlah, lalu tambah.
+- Catatan per item untuk dapur, dengan saran catatan yang menyesuaikan jenis menu.
+- Menu Bakso dengan harga custom.
+- Beberapa draf pesanan sekaligus, sehingga kasir dapat melayani beberapa meja bergantian.
+- Diskon dalam rupiah atau persen.
+- Stok harian per menu dan penanda menu habis (tahan lama pada menu untuk mengaturnya).
+- Menambah item ke pesanan yang sudah berjalan.
+- Pesanan tetap tersimpan saat internet terputus dan dikirim otomatis ketika koneksi kembali.
 
-### 3. Kitchen Display System (KDS)
+### Meja
 
-- Menampilkan pesanan yang masuk ke dapur.
-- Memperbarui daftar pesanan secara real-time.
-- Menampilkan rincian item dan jumlah pesanan.
-- Membantu staf dapur memantau proses pengerjaan pesanan.
-- Memperbarui status pesanan berdasarkan tahapan pengerjaan.
-- Menyediakan informasi waktu pesanan untuk membantu pemantauan antrean.
-- Mendukung notifikasi audio untuk pemberitahuan pesanan baru pada perangkat yang diaktifkan.
+- Denah meja 01 sampai 40, ditambah lokasi khusus: Bawa pulang, Meja belakang, dan Payung (1, 2, 37, 38, 39, 40).
+- Status meja: kosong, terisi, belum lunas, dan minta bill.
+- Memindahkan pesanan ke meja lain.
+- Menggabungkan beberapa bon dalam satu meja.
+- Memisahkan sebagian item menjadi bon baru.
+- Pesan ulang dari bon sebelumnya.
 
-### 4. Sinkronisasi dan Notifikasi
+### Pembayaran
 
-- Menggunakan Supabase Realtime untuk menerima perubahan data.
-- Menyediakan mekanisme polling sebagai pendukung sinkronisasi.
-- Menyinkronkan informasi pesanan antara perangkat kasir dan dapur.
-- Memberikan pembaruan status pesanan tanpa perlu memuat ulang halaman secara manual.
-- Mendukung notifikasi ketika pesanan mengalami perubahan status.
-- Menyediakan notifikasi visual dan audio sesuai konfigurasi perangkat.
+- Metode: Tunai, QRIS, Transfer, dan Belum Bayar (bon).
+- Pembulatan tunai (Rp500 atau Rp1.000), pilihan uang pas, dan hitung kembalian.
+- Split bill per menu: menentukan menu milik tiap orang, nominal dihitung otomatis termasuk pembagian diskon.
+- Split bill nominal manual dan bagi rata.
+- Pelunasan bon, termasuk pembayaran sebagian.
+- Catatan pembayaran per transaksi (siapa, metode, nominal).
 
-### 5. Pembayaran
+### Antrian
 
-- Mendukung pembayaran tunai dan non-tunai.
-- Mendukung pencatatan pesanan yang belum dibayar.
-- Menampilkan jumlah pembayaran dan sisa tagihan.
-- Mendukung pembayaran untuk pesanan yang telah dibuat sebelumnya.
-- Menyediakan perhitungan total transaksi.
-- Mendukung pencatatan nominal pembayaran tunai dan uang kembalian.
+- Nomor antrian harian yang sama di tiket dapur, riwayat, dan detail bon.
+- Tampilan dapur: pesanan dikelompokkan per status (Baru, Dimasak, Siap), filter pos makanan atau minuman, timer keterlambatan, dan ringkasan menu yang perlu dimasak.
+- Tampilan kasir (penyajian): daftar menu yang siap diantar, tombol antar per menu atau sekaligus, dan status pembayaran pada tiap kartu.
+- Admin dapat berpindah antara tampilan dapur dan kasir.
+- Alarm audio di perangkat yang ditandai sebagai pusat audio, serta notifikasi saat pesanan baru masuk atau menu siap diantar.
 
-### 6. Pencetakan Struk
+### Pencetakan
 
-- Mendukung pencetakan menggunakan printer thermal.
-- Mendukung printer yang terhubung melalui Bluetooth atau USB sesuai dukungan perangkat dan layanan penghubung.
-- Memisahkan format cetak tiket dapur dan struk pelanggan.
-- Menyediakan informasi pesanan pada tiket dapur.
-- Menyediakan rincian transaksi pada struk pelanggan.
-- Mendukung pengaturan alamat layanan pencetakan melalui konfigurasi aplikasi.
+- Cetak langsung ke printer thermal 58 mm lewat Web Bluetooth (Chrome di Android).
+- Print Relay: perangkat tanpa printer dapat mencetak lewat perangkat lain yang tersambung printer. Pengirim baru dianggap berhasil setelah menerima konfirmasi dari perangkat pencetak.
+- Pusat Cetak Kasir: tiket dapur tercetak otomatis saat pesanan masuk.
+- Cadangan melalui layanan Cleanter (alamat server dapat diatur).
+- Tiket dapur, struk pelanggan, tiket menu tambahan, dan laporan tutup kasir memiliki format terpisah.
+- Penyambungan ulang otomatis ke printer dan layar dijaga tetap menyala selama printer terhubung.
 
-### 7. Dashboard dan Laporan
+### Dashboard dan Laporan (Admin)
 
-- Menampilkan ringkasan aktivitas penjualan.
-- Menyediakan informasi omzet dan transaksi.
-- Menampilkan rincian penjualan berdasarkan periode.
-- Menyediakan informasi menu yang paling banyak dipesan.
-- Menampilkan informasi waktu operasional dengan aktivitas pesanan tertinggi.
-- Menyediakan ringkasan metode pembayaran.
+- Omzet, jumlah transaksi, porsi terjual, dan tagihan belum lunas, dibandingkan dengan periode sebelumnya.
+- Rincian penjualan per jam (hari ini) atau per hari (7 dan 30 hari).
+- Menu terlaris, penjualan per kategori, jam ramai, metode pembayaran, rekap kasir, status dapur, dan stok menipis.
+- Tutup kasir per shift: modal awal, hitung uang di laci, selisih, riwayat penutupan, dan cetak laporan.
 
-### 8. Manajemen Pengguna
+### Pengelolaan
 
-- Mendukung penggunaan aplikasi oleh beberapa pengguna.
-- Menyediakan pengelolaan akun pengguna.
-- Memisahkan akses berdasarkan peran pengguna.
-- Menyediakan pengaturan menu dan operasional sesuai hak akses.
+- Kelola menu: tambah, ubah, aktifkan atau nonaktifkan, dan hapus.
+- Kelola akun karyawan dan peran.
+- Hapus transaksi dengan soft delete (data diarsipkan, tidak dihapus permanen).
+- Log penghapusan riwayat dan catatan audit untuk perubahan penting (pindah meja, gabung, pisah, ubah status, hapus).
+- Status perangkat real-time: perangkat mana yang tersambung ke printer dan pusat audio, serta nama perangkat yang dapat diubah.
 
-## Alur Kerja Sistem
+## Peran Pengguna
 
-Secara umum, proses operasional Zayga POS berjalan melalui alur berikut:
+| Peran | Akses |
+|---|---|
+| Admin | Seluruh fitur: dashboard, pesanan, denah, antrian, riwayat, tutup kasir, kelola menu, akun, dan pengaturan. |
+| Kasir | Pesanan, denah, antrian (tampilan penyajian), riwayat, tutup kasir, dan pengaturan. Tidak dapat membuka dashboard dan kelola menu. |
+| Dapur | Antrian (tampilan dapur) dan pengaturan. Dapat mengubah status Baru, Dimasak, dan Siap. |
+
+Penandaan menu sebagai Diantar hanya dapat dilakukan oleh Kasir dan Admin.
+
+## Alur Kerja
 
 ```text
-+-----------------------+
-|     Perangkat Kasir   |
-|   Laptop / Ponsel     |
-+-----------+-----------+
-            |
-            | Membuat Pesanan
-            v
-+-----------------------+
-|    Database Supabase  |
-|                       |
-|  Penyimpanan Pesanan  |
-|  Sinkronisasi Data    |
-+-----------+-----------+
-            |
-            | Supabase Realtime
-            v
-+-----------------------+
-|   Perangkat Dapur     |
-| Kitchen Display System|
-+-----------+-----------+
-            |
-            | Proses Pesanan
-            v
-+-----------------------+
-|   Pembaruan Status    |
-|                       |
-|  Diproses / Siap      |
-+-----------+-----------+
-            |
-            | Sinkronisasi
-            v
-+-----------------------+
-|    Perangkat Kasir    |
-|                       |
-| Notifikasi Status     |
-| Penyelesaian Transaksi|
-+-----------------------+
+Kasir membuat pesanan
+        |
+        v
+Supabase menyimpan pesanan
+        |
+        +--> Tiket dapur tercetak otomatis di Pusat Cetak
+        |
+        v
+Dapur menerima pesanan (alarm dan antrian real-time)
+        |
+        v
+Dapur mengubah status: Baru -> Dimasak -> Siap
+        |
+        v
+Kasir menerima notifikasi "Siap diantar"
+        |
+        v
+Kasir menandai Diantar dan menyelesaikan pembayaran
 ```
 
-## Pengaturan Peran Pengguna
-
-Zayga POS menyediakan pengelolaan akses berdasarkan peran pengguna agar setiap bagian operasional dapat menggunakan fitur sesuai kebutuhannya.
-
-| Peran | Hak Akses |
-|---|---|
-| Admin | Mengelola pengguna, menu, pengaturan aplikasi, transaksi, serta melihat dashboard dan laporan. |
-| Kasir | Mengelola pesanan, memilih meja, memproses pembayaran, melihat riwayat transaksi, dan menggunakan fitur pencetakan. |
-| Dapur | Mengakses tampilan KDS untuk memantau pesanan dan memperbarui status pengerjaan sesuai konfigurasi akses aplikasi. |
-
-## Teknologi yang Digunakan
+## Teknologi
 
 | Teknologi | Kegunaan |
 |---|---|
-| React | Pengembangan antarmuka aplikasi. |
-| Vite | Build tool dan server pengembangan. |
-| JavaScript | Bahasa pemrograman utama aplikasi. |
-| Supabase | Backend, database, autentikasi, dan sinkronisasi real-time. |
-| PostgreSQL | Penyimpanan data melalui Supabase. |
-| CSS | Pengaturan tampilan dan responsivitas antarmuka. |
-| Browser API | Mendukung fitur audio dan interaksi perangkat. |
+| React | Antarmuka aplikasi |
+| Vite | Build tool dan server pengembangan |
+| Supabase (PostgreSQL, Realtime) | Database, sinkronisasi real-time, dan relay cetak |
+| lucide-react | Ikon antarmuka |
+| Web Bluetooth dan ESC/POS | Pencetakan langsung ke printer thermal |
+| CSS | Tata letak dan tampilan responsif |
 
-## Persyaratan Sistem
+## Persyaratan
 
-Sebelum menjalankan aplikasi, pastikan perangkat pengembangan telah memiliki:
+- Node.js versi LTS dan npm
+- Proyek Supabase
+- Browser modern. Untuk cetak Bluetooth gunakan Google Chrome di Android atau desktop (Web Bluetooth tidak tersedia di iOS dan Firefox)
+- Akses HTTPS atau `localhost`, karena Web Bluetooth hanya berjalan pada koneksi aman
 
-- Node.js versi LTS yang kompatibel dengan Vite.
-- npm.
-- Akun dan proyek Supabase.
-- Browser modern seperti Google Chrome atau Microsoft Edge.
-- Koneksi internet atau jaringan lokal untuk komunikasi antarp perangkat.
+## Instalasi
 
-## Instalasi dan Menjalankan Aplikasi
-
-### 1. Clone Repository
+### 1. Clone repository
 
 ```bash
 git clone https://github.com/bmarzky/zayga.git
 cd zayga
 ```
 
-### 2. Instal Dependensi
+### 2. Pasang dependensi
 
 ```bash
 npm install
 ```
 
-### 3. Konfigurasi Environment
+### 3. Atur environment
 
-Buat file `.env` pada direktori utama proyek, kemudian masukkan konfigurasi Supabase:
+Buat berkas `.env` di direktori utama:
 
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-Ganti nilai konfigurasi tersebut dengan URL proyek dan anon key dari dashboard Supabase.
+Gunakan anon key saja. Jangan pernah memasukkan service role key ke aplikasi frontend atau repository.
 
-Jangan memasukkan Supabase service role key ke dalam aplikasi frontend atau repository publik.
-
-### 4. Jalankan Server Pengembangan
+### 4. Jalankan mode pengembangan
 
 ```bash
 npm run dev
 ```
 
-Secara default, Vite akan menjalankan aplikasi pada alamat lokal yang ditampilkan di terminal.
-
-Untuk mengakses aplikasi dari perangkat lain dalam jaringan lokal, jalankan:
+Agar dapat diakses dari perangkat lain di jaringan yang sama:
 
 ```bash
 npm run dev -- --host 0.0.0.0
 ```
 
-Kemudian akses alamat IP lokal komputer server melalui browser perangkat lain menggunakan port yang ditampilkan oleh Vite.
+Buka alamat IP komputer beserta port yang tampil di terminal. Perlu diingat bahwa Web Bluetooth tidak berjalan pada alamat IP tanpa HTTPS, sehingga untuk mencetak gunakan versi yang sudah di-deploy dengan HTTPS.
 
-### 5. Build Aplikasi
-
-Untuk membuat versi produksi:
+### 5. Build produksi
 
 ```bash
 npm run build
 ```
 
-Hasil build akan disimpan dalam direktori `dist`.
+Hasil build berada di direktori `dist`.
 
-Untuk menjalankan pemeriksaan build, gunakan perintah tersebut dan pastikan proses selesai tanpa error.
+## Konfigurasi Database
 
-## Konfigurasi Perangkat Operasional
+Aplikasi membutuhkan objek berikut di proyek Supabase.
 
-### Perangkat Kasir
+**Tabel**
 
-1. Buka aplikasi melalui browser.
-2. Login menggunakan akun kasir.
-3. Pilih meja atau lokasi pelanggan.
-4. Tambahkan menu sesuai pesanan.
-5. Simpan pesanan untuk diteruskan ke dapur.
-6. Proses pembayaran sesuai metode yang digunakan.
-7. Cetak tiket dapur dan struk pelanggan jika diperlukan.
+| Tabel | Isi |
+|---|---|
+| `users` | Akun dan peran pengguna |
+| `menu_items` | Menu, harga, kategori, stok, dan status habis |
+| `orders` | Pesanan, item, pembayaran, status, dan penanda soft delete (`deleted_at`, `deleted_by`) |
+| `clear_logs` | Catatan penghapusan riwayat |
+| `order_audit` | Catatan audit perubahan pesanan |
+| `shift_closings` | Data tutup kasir |
+| `app_settings` | Pengaturan aplikasi, misalnya alamat server cetak (`print_url`) |
 
-### Perangkat Dapur
+**Fungsi database (RPC)**
 
-1. Buka aplikasi melalui perangkat yang digunakan sebagai monitor dapur.
-2. Login menggunakan akun dengan akses dapur apabila tersedia.
-3. Buka tampilan Kitchen Display System.
-4. Aktifkan izin audio browser apabila fitur notifikasi suara digunakan.
-5. Pantau pesanan yang masuk dan perbarui status pengerjaannya.
-6. Gunakan tampilan layar penuh untuk mempermudah pemantauan.
+| Fungsi | Kegunaan |
+|---|---|
+| `consume_stock` | Mengurangi stok secara atomik saat pesanan dibuat |
+| `merge_orders` | Menggabungkan dua bon dalam satu transaksi |
+| `split_order` | Memisahkan bon dalam satu transaksi |
 
-### Konfigurasi Printer
+**Realtime**
 
-1. Hubungkan printer thermal ke perangkat yang menjalankan layanan pencetakan.
-2. Pastikan perangkat printer dapat dikenali oleh layanan penghubung.
-3. Atur alamat layanan pencetakan melalui pengaturan aplikasi.
-4. Lakukan pengujian pencetakan tiket dapur dan struk pelanggan secara terpisah.
+Aktifkan Realtime untuk tabel `orders`, `menu_items`, dan `users`.
+
+Sesuaikan juga kebijakan Row Level Security (RLS) dengan kebutuhan operasional.
+
+## Konfigurasi Perangkat
+
+### Perangkat kasir
+
+1. Login dengan akun Kasir.
+2. Di Pengaturan, sambungkan printer Bluetooth. Perangkat yang tersambung ke printer otomatis menjadi server cetak untuk perangkat lain.
+3. Aktifkan Pusat Cetak Kasir pada perangkat yang dipakai mencetak tiket dapur otomatis.
+4. Gunakan Cetak Tes untuk memastikan printer siap.
+
+### Perangkat dapur
+
+1. Login dengan akun Dapur.
+2. Di Pengaturan, aktifkan alarm pesanan dapur (diperlukan satu kali ketukan agar browser mengizinkan audio).
+3. Letakkan berkas `public/kitchen-alarm.mp3` untuk suara alarm.
+4. Gunakan tampilan layar penuh untuk monitor dapur.
+
+### Pencetakan lewat Cleanter (opsional)
+
+Jika tidak memakai Web Bluetooth, atur alamat layanan Cleanter di Pengaturan, bagian Pengaturan Lanjutan. Admin dapat menyimpan satu alamat server pusat untuk semua kasir, sedangkan alamat khusus perangkat dapat diatur terpisah.
 
 ## Struktur Proyek
-
-Struktur direktori utama aplikasi secara umum:
 
 ```text
 zayga/
 ├── public/
+│   ├── icon.svg
 │   └── kitchen-alarm.mp3
 ├── src/
-│   ├── main.jsx
-│   └── style.css
+│   ├── main.jsx        Aplikasi utama
+│   ├── supabase.js     Klien Supabase
+│   └── app.css         Gaya tampilan
 ├── .env
-├── .gitignore
 ├── index.html
 ├── package.json
-├── package-lock.json
 └── vite.config.js
 ```
 
-Struktur tersebut menggambarkan berkas utama aplikasi. Direktori atau berkas tambahan dapat tersedia sesuai perkembangan proyek.
+Struktur ini adalah gambaran umum. Sesuaikan jika ada berkas atau direktori tambahan.
 
-## Catatan Penggunaan
+## Catatan Keamanan
 
-- Pastikan seluruh perangkat memiliki koneksi ke proyek Supabase yang sama.
-- Gunakan akun sesuai peran dan hak akses masing-masing.
-- Pastikan browser telah memberikan izin audio apabila notifikasi suara digunakan.
-- Untuk pencetakan dari perangkat berbeda, pastikan alamat layanan pencetakan dapat dijangkau melalui jaringan.
 - Jangan membagikan kredensial database atau kunci rahasia ke publik.
-- Pastikan konfigurasi database dan kebijakan Row Level Security (RLS) telah disesuaikan dengan kebutuhan aplikasi.
+- Ganti akun dan password bawaan sebelum aplikasi dipakai operasional.
+- Pastikan kebijakan RLS di Supabase sudah dibatasi sesuai kebutuhan.
+- Pastikan semua perangkat memakai proyek Supabase yang sama.
 
 ## Lisensi
 
-Proyek ini menggunakan lisensi MIT. Informasi lengkap mengenai ketentuan penggunaan dapat dilihat pada berkas [LICENSE](LICENSE).
+Proyek ini menggunakan lisensi MIT. Lihat berkas [LICENSE](LICENSE) untuk ketentuan lengkap.

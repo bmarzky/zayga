@@ -345,15 +345,20 @@ const BLE_SERVICE_UUIDS = [
 
 // Sambung ke GATT dan cari karakteristik yang bisa ditulis
 async function openPrinterChannel(device) {
-  const server = await device.gatt.connect();
-  const services = await server.getPrimaryServices().catch(() => []);
+  if (!device?.gatt) throw new Error('Perangkat printer Bluetooth tidak tersedia.');
+  // Hindari membuka koneksi GATT kedua saat koneksi sebenarnya masih aktif.
+  const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
+  const services = await server.getPrimaryServices();
+  let fallback = null;
   for (const sv of services) {
     const chars = await sv.getCharacteristics().catch(() => []);
     for (const c of chars) {
-      if (c.properties.write || c.properties.writeWithoutResponse) return c;
+      if (c.properties.write) return c; // ACK write lebih stabil untuk printer thermal.
+      if (!fallback && c.properties.writeWithoutResponse) fallback = c;
     }
   }
-  throw new Error('Karakteristik cetak tidak ditemukan pada printer ini.');
+  if (fallback) return fallback;
+  throw new Error('Karakteristik cetak tidak ditemukan. Putuskan printer dari perangkat lain lalu coba sambungkan kembali.');
 }
 
 // ============ Supabase Print Relay Channel ============
@@ -361,6 +366,16 @@ async function openPrinterChannel(device) {
 let printRelayChannel = null;
 let printRelayReady = false;
 const pendingPrintJobs = new Map();
+// Mencegah event Broadcast yang terkirim ulang mencetak struk dua kali.
+const completedRelayJobs = new Map();
+const processingRelayJobs = new Set();
+const recentRelayLogicalPrints = new Map();
+const processingRelayLogicalKeys = new Set();
+let relayPrintQueue = Promise.resolve();
+// Mencegah klik ganda / pemanggilan otomatis bersamaan untuk bon yang sama.
+const activePrintKeys = new Set();
+const recentPrintKeys = new Map();
+let printExecutionQueue = Promise.resolve();
 const PRINT_RELAY_CHANNEL = 'print-relay-v1';
 const PRINT_RELAY_ACK_TIMEOUT = 20000;
 
@@ -412,9 +427,8 @@ const receiptToEscPosBytes = (content) => {
     }
   }
 
-  // Feed 3 baris & potong kertas (cut)
+  // Feed 3 baris tanpa perintah cut agar konsisten dengan pengaturan Zayga (cut:false).
   add(0x0a, 0x0a, 0x0a);
-  add(0x1d, 0x56, 0x42, 0x00);
 
   return new Uint8Array(bytes);
 };
@@ -423,24 +437,29 @@ const printViaWebBluetooth = async (uint8Data) => {
   if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) {
     throw new Error('Printer Bluetooth belum terhubung.');
   }
-  // Chunk 512 byte — lebih cepat dari 64 byte, masih aman untuk sebagian besar printer BT
-  const CHUNK_SIZE = 512;
+  // Ukuran kecil dan jeda stabil mengurangi kegagalan GATT pada printer thermal Android.
+  const CHUNK_SIZE = 180;
   for (let i = 0; i < uint8Data.length; i += CHUNK_SIZE) {
-    const chunk = uint8Data.slice(i, i + CHUNK_SIZE);
-    // writeValueWithoutResponse = tidak perlu menunggu ACK dari printer → lebih cepat
-    if (globalBleCharacteristic.properties?.writeWithoutResponse) {
-      await globalBleCharacteristic.writeValueWithoutResponse(chunk);
-    } else {
-      await globalBleCharacteristic.writeValue(chunk);
+    if (!globalBleDevice?.gatt?.connected || !globalBleCharacteristic) {
+      throw new Error('Koneksi Bluetooth terputus saat mengirim struk. Periksa printer sebelum mencoba cetak ulang.');
     }
-    // Delay minimal hanya jika ada lebih dari satu chunk
-    if (i + CHUNK_SIZE < uint8Data.length) {
-      await new Promise(r => setTimeout(r, 5));
+    const chunk = uint8Data.slice(i, i + CHUNK_SIZE);
+    // Utamakan write dengan response agar browser menunggu konfirmasi GATT.
+    if (globalBleCharacteristic.properties?.write && globalBleCharacteristic.writeValue) {
+      await globalBleCharacteristic.writeValue(chunk);
+    } else if (globalBleCharacteristic.properties?.writeWithoutResponse && globalBleCharacteristic.writeValueWithoutResponse) {
+      await globalBleCharacteristic.writeValueWithoutResponse(chunk);
+      await new Promise(r => setTimeout(r, 18));
+    } else {
+      throw new Error('Karakteristik printer tidak mendukung pengiriman data. Sambungkan ulang printer.');
+    }
+    if (i + CHUNK_SIZE < uint8Data.length && globalBleCharacteristic.properties?.write) {
+      await new Promise(r => setTimeout(r, 8));
     }
   }
 };
 
-const sendPrintJob = async (order, type, url) => {
+const sendPrintJobInternal = async (order, type, url, targetDeviceId) => {
   const content = buildReceipt(order, type);
   // 0. Printer pernah terhubung tetapi putus: coba sambung ulang dulu
   if (globalBleDevice && !globalBleDevice.gatt?.connected && bleReconnectHook) {
@@ -454,6 +473,7 @@ const sendPrintJob = async (order, type, url) => {
   }
   // 2. Relay jaringan: wajib menunggu ACK dari HP yang benar-benar mencetak.
   if (printRelayChannel) {
+    if (!targetDeviceId) throw new Error('Perangkat pusat printer belum terdeteksi. Pastikan HP kasir yang terhubung ke Bluetooth sedang membuka Zayga.');
     if (!printRelayReady) {
       throw new Error('Koneksi Print Relay belum siap. Tunggu beberapa detik lalu coba cetak kembali.');
     }
@@ -464,7 +484,7 @@ const sendPrintJob = async (order, type, url) => {
       const status = await printRelayChannel.send({
         type: 'broadcast',
         event: 'print_job',
-        payload: { bytesArr: Array.from(bytes), jobId }
+        payload: { bytesArr: Array.from(bytes), jobId, targetDeviceId, logicalKey: `${order?.id || 'order'}:${type}` }
       });
       if (status !== 'ok') throw new Error(`Pesan cetak gagal dikirim melalui jaringan (${status || 'status tidak diketahui'}).`);
     } catch (err) {
@@ -475,6 +495,30 @@ const sendPrintJob = async (order, type, url) => {
   }
   // 3. Fallback ke Cleanter bridge lokal/server jika diatur
   return postPrint(content, `${order?.id}-${type}`, url);
+};
+
+
+const sendPrintJob = async (order, type, url, targetDeviceId = null) => {
+  const key = `${order?.id || 'unknown'}:${type || 'customer'}`;
+  if (activePrintKeys.has(key)) {
+    throw new Error('Struk untuk pesanan ini sedang diproses. Tunggu hingga proses cetak selesai.');
+  }
+  const lastSuccess = recentPrintKeys.get(key) || 0;
+  if (Date.now() - lastSuccess < 3500) {
+    throw new Error('Cetak ganda dicegah karena struk pesanan ini baru saja dikirim ke printer.');
+  }
+  activePrintKeys.add(key);
+  try {
+    // Satu antrean global per tab: dua struk berbeda tidak mengirim data GATT bersamaan.
+    const jobPromise = printExecutionQueue.catch(() => {}).then(() => sendPrintJobInternal(order, type, url, targetDeviceId));
+    printExecutionQueue = jobPromise.then(() => undefined, () => undefined);
+    const result = await jobPromise;
+    recentPrintKeys.set(key, Date.now());
+    for (const [k, at] of recentPrintKeys) if (Date.now() - at > 60000) recentPrintKeys.delete(k);
+    return result;
+  } finally {
+    activePrintKeys.delete(key);
+  }
 };
 
 /* ===================== Komponen Pendukung ===================== */
@@ -571,7 +615,7 @@ function DeviceStatusCard({ peers, myId, myName, onRename }) {
   const [draft, setDraft] = useState(myName);
   useEffect(() => setDraft(myName), [myName]);
   const label = p => `${p.deviceName || 'Perangkat'} (${p.username || '?'})${p.deviceId === myId ? ' — perangkat ini' : ''}`;
-  const printers = peers.filter(p => p.printer);
+  const printers = peers.filter(p => p.printer || p.printerClaim);
   const audios = peers.filter(p => p.audio);
   const Row = ({ icon, title, list, emptyText, extra }) => (
     <div className="ms-row">
@@ -590,8 +634,8 @@ function DeviceStatusCard({ peers, myId, myName, onRename }) {
     <div className="ms-section">
       <div className="ms-section-title">Status Perangkat (Real-time)</div>
       <div className="ms-group">
-        <Row icon={<Printer size={20} />} title="Printer terhubung ke" list={printers} extra={p => p.printer}
-          emptyText="Belum ada perangkat yang tersambung ke printer" />
+        <Row icon={<Printer size={20} />} title="Printer / pengunci koneksi" list={printers} extra={p => p.printer || (p.printerClaim ? 'Sedang mengunci / menyambungkan' : '')}
+          emptyText="Belum ada perangkat yang mengunci koneksi printer" />
         <Row icon={<Volume2 size={20} />} title="Suara / alarm dapur di" list={audios}
           emptyText="Belum ada perangkat pusat audio" />
         <div className="ms-row">
@@ -1106,7 +1150,12 @@ export default function App() {
   const [printerStatus, setPrinterStatus] = useState('Tidak terhubung');
   const [printerName, setPrinterName] = useState('');
   const [bleConnected, setBleConnected] = useState(false);
+  const bleConnectedRef = useRef(bleConnected); bleConnectedRef.current = bleConnected;
   const [bleDeviceName, setBleDeviceName] = useState('');
+  // Klaim printer dibagikan melalui Supabase Presence agar hanya satu perangkat
+  // yang boleh membuka koneksi Bluetooth pada satu waktu.
+  const [printerConnecting, setPrinterConnecting] = useState(false);
+  const printerConnectLock = useRef(false);
   const bleManualDisc = useRef(false);   // true = diputus sengaja oleh pengguna
   const bleReconnecting = useRef(false); // mencegah sambung ulang ganda
   const [mobileSettingsView, setMobileSettingsView] = useState('main'); // 'main', 'akun', 'log'
@@ -1215,7 +1264,9 @@ export default function App() {
   // Semua cetak TIKET DAPUR lewat sini: bunyi dikirim bersamaan dengan perintah cetak.
   const sendPrint = (order, type, url) => {
     if (type === 'kitchen') signalKitchenPrint();
-    return sendPrintJob(order, type, url);
+    const claimedPrinter = getOtherPrinterClaims().find(peer => peer?.deviceId);
+    const targetDeviceId = bleConnectedRef.current ? deviceId : (claimedPrinter?.deviceId || null);
+    return sendPrintJob(order, type, url, targetDeviceId);
   };
 
   const activateCentralAudio = async () => {
@@ -1582,31 +1633,53 @@ export default function App() {
     });
 
     ch.on('broadcast', { event: 'print_job' }, async ({ payload }) => {
-      // Hanya perangkat yang benar-benar memiliki koneksi Bluetooth yang boleh mengambil job.
       if (!payload?.jobId || !Array.isArray(payload.bytesArr)) return;
-      if (globalBleDevice && !globalBleDevice.gatt?.connected && bleReconnectHook) {
-        await bleReconnectHook(2);
+      // Broadcast diterima semua perangkat. Hanya pemilik printer yang dituju boleh mencetak.
+      if (!payload.targetDeviceId || payload.targetDeviceId !== deviceId) return;
+      if (completedRelayJobs.has(payload.jobId)) {
+        await ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId, ...completedRelayJobs.get(payload.jobId) } });
+        return;
       }
-      if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) return;
+      // Dua kasir/perangkat bisa mengirim tiket bon yang sama hampir bersamaan.
+      // Dedup di perangkat printer fisik agar hanya satu lembar yang keluar.
+      const logicalAt = recentRelayLogicalPrints.get(payload.logicalKey);
+      if (payload.logicalKey && logicalAt && Date.now() - logicalAt < 5000) {
+        const duplicateAck = { ok: true, printer: globalBleDevice?.name || 'Printer Bluetooth', duplicateSuppressed: true };
+        completedRelayJobs.set(payload.jobId, duplicateAck);
+        await ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId, ...duplicateAck } });
+        return;
+      }
+      if (processingRelayJobs.has(payload.jobId)) return;
+      if (payload.logicalKey && processingRelayLogicalKeys.has(payload.logicalKey)) return;
+      if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) {
+        if (globalBleDevice && bleReconnectHook) await bleReconnectHook(3);
+      }
+      if (!globalBleCharacteristic || !globalBleDevice || !globalBleDevice.gatt?.connected) {
+        await ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId, ok: false, error: 'Perangkat pusat printer sedang tidak terhubung. Buka Zayga di perangkat pusat lalu sambungkan ulang printer.' } });
+        return;
+      }
 
-      try {
+      processingRelayJobs.add(payload.jobId);
+      if (payload.logicalKey) processingRelayLogicalKeys.add(payload.logicalKey);
+      relayPrintQueue = relayPrintQueue.catch(() => {}).then(async () => {
+        if (completedRelayJobs.has(payload.jobId)) return completedRelayJobs.get(payload.jobId);
         await printViaWebBluetooth(new Uint8Array(payload.bytesArr));
-        await ch.send({
-          type: 'broadcast',
-          event: 'print_done',
-          payload: {
-            jobId: payload.jobId,
-            ok: true,
-            printer: globalBleDevice?.name || 'Printer Bluetooth'
-          }
-        });
+        return { ok: true, printer: globalBleDevice?.name || 'Printer Bluetooth' };
+      });
+      try {
+        const result = await relayPrintQueue;
+        completedRelayJobs.set(payload.jobId, result);
+        if (result?.ok && payload.logicalKey) recentRelayLogicalPrints.set(payload.logicalKey, Date.now());
+        for (const [k, at] of recentRelayLogicalPrints) if (Date.now() - at > 60000) recentRelayLogicalPrints.delete(k);
+        if (completedRelayJobs.size > 300) completedRelayJobs.delete(completedRelayJobs.keys().next().value);
+        await ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId, ...result } });
       } catch (err) {
         console.error('Relay print gagal:', err);
-        await ch.send({
-          type: 'broadcast',
-          event: 'print_done',
-          payload: { jobId: payload.jobId, ok: false, error: err?.message || 'Gagal mencetak melalui Bluetooth.' }
-        });
+        const result = { ok: false, error: err?.message || 'Gagal mencetak melalui Bluetooth.' };
+        await ch.send({ type: 'broadcast', event: 'print_done', payload: { jobId: payload.jobId, ...result } });
+      } finally {
+        processingRelayJobs.delete(payload.jobId);
+        if (payload.logicalKey) processingRelayLogicalKeys.delete(payload.logicalKey);
       }
     });
 
@@ -1649,6 +1722,7 @@ export default function App() {
     deviceId, deviceName,
     username: user?.username || null, role: user?.role || null,
     printer: bleConnected ? (bleDeviceName || 'Printer Bluetooth') : null,
+    printerClaim: !!(bleConnected || printerConnecting),
     audio: !!centralAudioDevice || user?.role === 'Dapur',
   };
   const deviceInfoRef = useRef(deviceInfo); deviceInfoRef.current = deviceInfo;
@@ -1674,7 +1748,7 @@ export default function App() {
     if (presenceReadyRef.current && presenceChRef.current) {
       Promise.resolve(presenceChRef.current.track({ ...deviceInfoRef.current, at: Date.now() })).catch(() => {});
     }
-  }, [deviceName, bleConnected, bleDeviceName, centralAudioDevice, user?.role, user?.username]);
+  }, [deviceName, bleConnected, bleDeviceName, printerConnecting, centralAudioDevice, user?.role, user?.username]);
 
   // Sambung ulang otomatis saat aplikasi kembali dibuka
   useEffect(() => {
@@ -2257,48 +2331,119 @@ export default function App() {
   // Cetak tiket dapur otomatis (pesanan baru, bon belum bayar, antrean offline): lewat sendPrint agar berbunyi.
   const autoPrint = async (o) => {
     if (!o || !o.id) return false;
+    // Bila printer Bluetooth dimiliki perangkat lain, biarkan perangkat pemilik
+    // yang menangani auto-print. Ini mencegah setiap kasir mengirim tiket yang sama.
+    if (!bleConnected && getOtherPrinterClaims().length > 0) return false;
     if (seenAutoPrintedOrders.current.has(o.id)) return true;
     seenAutoPrintedOrders.current.add(o.id);
+    let sentToPrinter = false;
     try {
       await sendPrint(forPrint(o, 'kitchen'), 'kitchen', printUrlRef.current);
+      sentToPrinter = true;
       const fields = { kitchen_printed: true };
       const { error: updateError } = await supabase.from('orders').update(fields).eq('id', o.id);
-      if (updateError) throw new Error(`Tiket tercetak, tetapi status database gagal diperbarui: ${updateError.message}`);
+      if (updateError) {
+        // Jangan tawarkan cetak ulang: data sudah terkirim ke printer.
+        setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...fields } : x));
+        flash(`Tiket dapur sudah dikirim ke printer, tetapi status database belum tersinkron: ${updateError.message}`, 9000);
+        return true;
+      }
       setOrders(prev => prev.map(x => x.id === o.id ? { ...x, ...fields } : x));
       return true;
     } catch (err) {
-      seenAutoPrintedOrders.current.delete(o.id);
+      if (!sentToPrinter) seenAutoPrintedOrders.current.delete(o.id);
       flash(
-        `Pesanan tersimpan, tetapi tiket dapur gagal dicetak: ${err.message}`,
+        sentToPrinter
+          ? `Tiket dapur sudah dikirim, tetapi ada masalah setelah pencetakan: ${err.message}`
+          : `Pesanan tersimpan, tetapi tiket dapur gagal dicetak: ${err.message}`,
         9000,
-        { label: 'Coba cetak tiket dapur', fn: () => printOrder(o, 'kitchen') }
+        sentToPrinter ? undefined : { label: 'Coba cetak tiket dapur', fn: () => printOrder(o, 'kitchen') }
       );
-      return false;
+      return sentToPrinter;
     }
   };
 
   // Tiket dapur berbunyi; struk kasir (type 'customer') tetap senyap.
+  const printOrderLocks = useRef(new Set());
   const printOrder = async (o, type = 'customer') => {
+    const printKey = `${o?.id}:${type}`;
+    if (printOrderLocks.current.has(printKey)) return;
+    printOrderLocks.current.add(printKey);
     setPrinting(true);
+    let sentToPrinter = false;
     try {
       await sendPrint(forPrint(o, type), type, printUrlRef.current);
+      sentToPrinter = true;
       const updateField = type === 'kitchen' ? { kitchen_printed: true } : { customer_printed: true };
       const { error: updateError } = await supabase.from('orders').update(updateField).eq('id', o.id);
-      if (updateError) throw new Error(`Tiket tercetak, tetapi status database gagal diperbarui: ${updateError.message}`);
       setOrders(prev => prev.map(item => item.id === o.id ? { ...item, ...updateField } : item));
-      flash(`${type === 'kitchen' ? 'Tiket dapur' : 'Struk pelanggan'} ${o.id} berhasil dicetak.`);
+      if (updateError) {
+        flash(`Struk sudah dikirim ke printer, tetapi status database belum tersinkron: ${updateError.message}`, 8000);
+      } else {
+        flash(`${type === 'kitchen' ? 'Tiket dapur' : 'Struk pelanggan'} ${o.id} berhasil dicetak.`);
+      }
     } catch (err) {
-      flash(`Gagal mencetak: ${err.message}`, 7000, { label: 'Coba lagi', fn: () => printOrder(o, type) });
-    } finally { setPrinting(false); }
+      flash(
+        sentToPrinter ? `Struk sudah dikirim ke printer, tetapi terjadi masalah saat memperbarui status: ${err.message}` : `Gagal mencetak: ${err.message}`,
+        7000,
+        sentToPrinter ? undefined : { label: 'Coba lagi', fn: () => printOrder(o, type) }
+      );
+    } finally {
+      printOrderLocks.current.delete(printKey);
+      setPrinting(false);
+    }
+  };
+
+  // Ambil status klaim dari Supabase Presence.
+  // Klaim aktif mencakup proses memilih printer, koneksi aktif, dan proses reconnect.
+  const getOtherPrinterClaims = () => {
+    const ch = presenceChRef.current;
+    if (!ch) return [];
+    const state = ch.presenceState();
+    return Object.values(state)
+      .flat()
+      .filter(p => p && p.deviceId !== deviceId && p.printerClaim);
+  };
+
+  const publishPrinterClaim = async (claiming) => {
+    const ch = presenceChRef.current;
+    if (!ch || !presenceReadyRef.current) return false;
+    const info = {
+      ...deviceInfoRef.current,
+      printerClaim: !!claiming,
+      printer: bleConnected ? (bleDeviceName || 'Printer Bluetooth') : null,
+      at: Date.now()
+    };
+    try {
+      await ch.track(info);
+      return true;
+    } catch (err) {
+      console.warn('Gagal memperbarui klaim printer:', err);
+      return false;
+    }
+  };
+
+  const releasePrinterClaim = async () => {
+    setPrinterConnecting(false);
+    await publishPrinterClaim(false);
   };
 
   const reconnectBluetoothPrinter = async (tries = 3) => {
     const dev = globalBleDevice;
     if (!dev || bleManualDisc.current) return false;
     if (dev.gatt && dev.gatt.connected && globalBleCharacteristic) return true;
-    if (bleReconnecting.current) return false;
+    if (bleReconnecting.current) {
+      // Pemanggilan dari beberapa tempat (visibility, refresh, cetak) berbagi satu proses reconnect.
+      for (let wait = 0; wait < 12 && bleReconnecting.current; wait++) await new Promise(r => setTimeout(r, 250));
+      return !!(globalBleDevice?.gatt?.connected && globalBleCharacteristic);
+    }
+
+    // Pemilik koneksi yang sama mempertahankan klaim selama mencoba reconnect.
     bleReconnecting.current = true;
+    setPrinterConnecting(true);
     setPrinterStatus('Menyambung ulang...');
+    await publishPrinterClaim(true);
+
     for (let i = 0; i < tries; i++) {
       try {
         globalBleCharacteristic = await openPrinterChannel(dev);
@@ -2308,15 +2453,22 @@ export default function App() {
         setPrinterName(name);
         setPrinterStatus('Terhubung');
         bleReconnecting.current = false;
+        setPrinterConnecting(false);
+        await publishPrinterClaim(true);
         return true;
       } catch (e) {
-        await new Promise(r => setTimeout(r, 1200 * (i + 1)));
+        globalBleCharacteristic = null;
+        try { if (dev.gatt?.connected) dev.gatt.disconnect(); } catch {}
+        await new Promise(r => setTimeout(r, 900 * (i + 1)));
       }
     }
+
     bleReconnecting.current = false;
     globalBleCharacteristic = null;
     setBleConnected(false);
     setPrinterStatus('Tidak terhubung');
+    setPrinterConnecting(false);
+    await publishPrinterClaim(false);
     return false;
   };
   bleReconnectHook = reconnectBluetoothPrinter;
@@ -2326,48 +2478,118 @@ export default function App() {
       flash('Browser belum mendukung Web Bluetooth. Pastikan buka lewat Google Chrome di HP Android.', 5000);
       return;
     }
+
+    if (printerConnectLock.current) return;
+    printerConnectLock.current = true;
+
     try {
-      setPrinterStatus('Memeriksa...');
+      if (!presenceReadyRef.current || !presenceChRef.current) {
+        throw new Error('Koneksi status perangkat belum siap. Tunggu beberapa detik lalu coba lagi.');
+      }
+
+      // Periksa pemilik yang sudah lebih dahulu mengklaim printer.
+      let otherClaims = getOtherPrinterClaims();
+      if (otherClaims.length) {
+        const owner = otherClaims[0];
+        throw new Error(`Printer sedang digunakan oleh ${owner.deviceName || 'perangkat lain'} (${owner.username || 'pengguna lain'}). Putuskan printer dari perangkat tersebut sebelum menyambungkan di sini.`);
+      }
+
+      // Umumkan klaim sebelum membuka dialog Bluetooth. Perangkat lain akan
+      // melihat status "sedang menyambungkan" dan menolak koneksi baru.
+      setPrinterConnecting(true);
+      setPrinterStatus('Mengunci printer...');
+      const tracked = await publishPrinterClaim(true);
+      if (!tracked) {
+        throw new Error('Tidak dapat mengunci printer melalui jaringan. Periksa koneksi internet lalu coba lagi.');
+      }
+
+      // Beri waktu Presence menyebarkan klaim. Jika dua perangkat menekan
+      // Sambungkan hampir bersamaan, keduanya membaca daftar klaim yang sama
+      // dan hanya deviceId terkecil yang boleh melanjutkan.
+      await new Promise(r => setTimeout(r, 1100));
+      otherClaims = getOtherPrinterClaims();
+      if (otherClaims.length) {
+        const contenders = [deviceId, ...otherClaims.map(p => p.deviceId)].sort();
+        if (contenders[0] !== deviceId) {
+          const owner = otherClaims.find(p => p.deviceId === contenders[0]) || otherClaims[0];
+          throw new Error(`Printer sedang diklaim oleh ${owner.deviceName || 'perangkat lain'}. Perangkat ini tidak dapat menyambungkan printer.`);
+        }
+      }
+
       const device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
         optionalServices: BLE_SERVICE_UUIDS
       });
+
       bleManualDisc.current = false;
       const char = await openPrinterChannel(device);
       globalBleDevice = device;
       globalBleCharacteristic = char;
       const name = device.name || 'Printer Bluetooth';
+
       setBleConnected(true);
       setBleDeviceName(name);
       setPrinterStatus('Terhubung');
       setPrinterName(name);
-      device.addEventListener('gattserverdisconnected', () => {
-        globalBleCharacteristic = null; // device sengaja DIPERTAHANKAN untuk sambung ulang
+      setPrinterConnecting(false);
+      await publishPrinterClaim(true);
+
+      if (!device.__zaygaDisconnectListenerAttached) {
+        device.__zaygaDisconnectListenerAttached = true;
+        device.addEventListener('gattserverdisconnected', () => {
+        globalBleCharacteristic = null;
         setBleConnected(false);
         setPrinterStatus('Tidak terhubung');
-        if (!bleManualDisc.current) setTimeout(() => reconnectBluetoothPrinter(3), 800);
-      });
-      flash('✓ Berhasil terhubung ke ' + name + '!', 4000);
+
+        // Klaim tetap aktif selama proses reconnect agar perangkat lain
+        // tidak merebut printer ketika koneksi Bluetooth sedang pulih.
+        if (!bleManualDisc.current) {
+          setPrinterConnecting(true);
+          publishPrinterClaim(true);
+          setTimeout(() => reconnectBluetoothPrinter(3), 800);
+        } else {
+          setPrinterConnecting(false);
+          publishPrinterClaim(false);
+        }
+        });
+      }
+
+      flash('✓ Berhasil terhubung ke ' + name + '. Perangkat ini menjadi satu-satunya Printer Server.', 5000);
     } catch (err) {
       console.warn('Gagal sambung bluetooth:', err);
       if (err.name !== 'NotFoundError') {
-        flash('Gagal menyambungkan printer: ' + err.message, 5000);
+        flash(err.message || 'Gagal menyambungkan printer.', 6000);
       }
       setPrinterStatus(bleConnected ? 'Terhubung' : 'Tidak terhubung');
+      setPrinterConnecting(false);
+      await publishPrinterClaim(!!(globalBleDevice && globalBleDevice.gatt?.connected));
+    } finally {
+      printerConnectLock.current = false;
     }
   };
 
-  const disconnectBluetoothPrinter = () => {
+  const disconnectBluetoothPrinter = async () => {
     bleManualDisc.current = true;
-    if (globalBleDevice && globalBleDevice.gatt && globalBleDevice.gatt.connected) {
-      globalBleDevice.gatt.disconnect();
-    }
-    globalBleDevice = null;
-    globalBleCharacteristic = null;
+    const device = globalBleDevice;
+
+    // Lepaskan status kepemilikan lebih dahulu supaya perangkat lain
+    // dapat mengambil alih setelah Bluetooth benar-benar diputus.
+    setPrinterConnecting(false);
     setBleConnected(false);
     setBleDeviceName('');
     setPrinterStatus('Tidak terhubung');
-    flash('Printer Bluetooth diputuskan.', 3000);
+
+    globalBleDevice = null;
+    globalBleCharacteristic = null;
+
+    try {
+      if (device?.gatt?.connected) device.gatt.disconnect();
+    } catch (err) {
+      console.warn('Gagal memutus Bluetooth:', err);
+    }
+
+    await publishPrinterClaim(false);
+    flash('Printer Bluetooth diputuskan. Perangkat lain sekarang dapat menyambungkan printer.', 4000);
   };
 
   const refreshPrinter = async () => {
@@ -4304,11 +4526,33 @@ export default function App() {
                             Putuskan
                           </button>
                         ) : (
-                          <button type="button" className="ms-btn-action primary" onClick={connectBluetoothPrinter}>
-                            <Bluetooth size={14} /> Sambungkan
+                          <button
+                            type="button"
+                            className="ms-btn-action primary"
+                            onClick={connectBluetoothPrinter}
+                            disabled={printerConnecting || devicePeers.some(p => p.printerClaim && p.deviceId !== deviceId)}
+                            title={devicePeers.some(p => p.printerClaim && p.deviceId !== deviceId) ? 'Printer sedang digunakan perangkat lain' : 'Sambungkan printer'}
+                          >
+                            <Bluetooth size={14} />
+                            {printerConnecting ? 'Mengunci...' : devicePeers.some(p => p.printerClaim && p.deviceId !== deviceId) ? 'Sedang dipakai' : 'Sambungkan'}
                           </button>
                         )}
                       </div>
+
+                      {devicePeers.some(p => p.printerClaim && p.deviceId !== deviceId) && !bleConnected && (
+                        <div className="ms-row" style={{ background: '#fff7ed', borderColor: '#fed7aa' }}>
+                          <div className="ms-row-start">
+                            <div className="ms-icon-box" style={{ background: '#ffedd5', color: '#c2410c' }}><Lock size={18} /></div>
+                            <div className="ms-row-text">
+                              <span className="ms-row-label">Printer sedang dikunci</span>
+                              <span className="ms-row-sub">
+                                Digunakan oleh {devicePeers.find(p => p.printerClaim && p.deviceId !== deviceId)?.deviceName || 'perangkat lain'}.
+                                Perangkat ini hanya dapat mencetak melalui jaringan.
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Baris 1b: Status Relay Print */}
                       <div className="ms-row" style={{ background: bleConnected ? '#f0fdf4' : '#f8fafc' }}>

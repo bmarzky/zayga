@@ -4444,7 +4444,7 @@ export default function App() {
                     <div className="ms-row-start">
                       <div className="ms-icon-box green"><Radio size={19} /></div>
                       <div className="ms-row-text">
-                        <span className="ms-row-label">Cetak lewat {otherPrinter.deviceName}</span>
+                        <span className="ms-row-label">Aktif di {otherPrinter.deviceName}</span>
                         <span className="ms-row-sub">Perangkat itu sudah tersambung ke printer, jadi HP ini bisa mencetak lewat jaringan.</span>
                       </div>
                     </div>

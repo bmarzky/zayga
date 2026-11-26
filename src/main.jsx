@@ -19,6 +19,39 @@ const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } cat
 
 const BAKSO_ID = 'bakso-custom';
 
+// Tambahan dihitung sebagai bagian dari harga item, bukan menu terpisah.
+// Harga Telur mengikuti rancangan: +Rp3.000. Level pedas tidak dikenakan biaya.
+const MENU_ADDONS = [
+  { id: 'telur', label: 'Telur', price: 3000, categories: ['Mie', 'Popmie', 'Nasi'] }
+];
+const SPICE_LEVELS = ['Tidak pedas', 'Normal', 'Pedas', 'Extra pedas'];
+
+// Harga suhu untuk menu yang sekarang hanya memiliki satu nama di daftar menu.
+// Harga Hangat mengikuti harga Panas; harga Dingin mengikuti data menu lama.
+const MENU_TEMPERATURES = [
+  { category: 'Minuman', name: 'Teh', prices: { panas: 5000, hangat: 5000, dingin: 5000 }, aliases: ['Teh Panas', 'Teh Dingin'] },
+  { category: 'Kopi', name: 'Espresso', prices: { panas: 10000, hangat: 10000, dingin: 13000 }, aliases: ['Espresso Panas', 'Espresso Dingin'] },
+  { category: 'Kopi', name: 'Sanger', prices: { panas: 12000, hangat: 12000, dingin: 15000 }, aliases: ['Sanger Panas', 'Sanger Dingin'] }
+];
+const LEGACY_TOPPING_NAME = /\s\+\s*telur$/i;
+// Menu lama yang sebenarnya merupakan varian susu dari menu dasar.
+// Jika menu dasarnya tersedia, varian lama disembunyikan agar kasir memilih
+// menu dasar lalu mengaktifkan opsi Pakai susu (harga khusus Teh Hijau +Rp2.000).
+const LEGACY_MILK_VARIANTS = [
+  { category: 'Minuman', name: 'Teh Hijau Susu', baseName: 'Teh Hijau' }
+];
+const isLegacyMilkVariant = (item, allItems = []) => {
+  const config = LEGACY_MILK_VARIANTS.find(x =>
+    x.category === item?.category && normalizeMenuText(x.name) === normalizeMenuText(item?.name)
+  );
+  if (!config) return false;
+  return (allItems || []).some(x =>
+    x.category === config.category && normalizeMenuText(x.name) === normalizeMenuText(config.baseName)
+  );
+};
+const normalizeMenuText = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+
 const DEFAULT_USERS = [
   { username: 'admin', password: 'admin123', role: 'Admin' },
   { username: 'bima', password: 'bima123', role: 'Kasir' },
@@ -28,9 +61,7 @@ const DEFAULT_USERS = [
 
 const DEFAULT_MENU_ITEMS = [
   { id: 1, name: 'Mie Soto Medan', category: 'Mie', price: 10000, active: true },
-  { id: 2, name: 'Mie Soto Medan + Telur', category: 'Mie', price: 13000, active: true },
   { id: 3, name: 'Mie Sedaap Goreng', category: 'Mie', price: 10000, active: true },
-  { id: 4, name: 'Mie Sedaap Goreng + Telur', category: 'Mie', price: 13000, active: true },
   { id: 5, name: 'Kentang Goreng', category: 'Snack', price: 15000, active: true },
   { id: 6, name: 'Risol', category: 'Snack', price: 10000, active: true },
   { id: 7, name: 'Tempe Goreng', category: 'Snack', price: 10000, active: true },
@@ -41,7 +72,7 @@ const DEFAULT_MENU_ITEMS = [
   { id: 12, name: 'Popmie Rasa Kari', category: 'Popmie', price: 8000, active: true },
   { id: 13, name: 'Popmie Rasa Soto', category: 'Popmie', price: 8000, active: true },
   { id: 14, name: 'Nasi Ayam Geprek', category: 'Nasi', price: 15000, active: true },
-  { id: 15, name: 'Nasi Putih + Telur', category: 'Nasi', price: 13000, active: true },
+  { id: 15, name: 'Nasi Putih', category: 'Nasi', price: 10000, active: true },
   { id: 16, name: 'Nasi Goreng Telur', category: 'Nasi', price: 13000, active: true },
   { id: 17, name: 'Nasi Goreng Ayam', category: 'Nasi', price: 15000, active: true },
   { id: 18, name: 'Ayam Geprek', category: 'Nasi', price: 10000, active: true },
@@ -49,9 +80,7 @@ const DEFAULT_MENU_ITEMS = [
   { id: 20, name: 'Blue Squash', category: 'Minuman', price: 12000, active: true },
   { id: 21, name: 'Orange Squash', category: 'Minuman', price: 12000, active: true },
   { id: 22, name: 'Teh Hijau', category: 'Minuman', price: 8000, active: true },
-  { id: 23, name: 'Teh Hijau Susu', category: 'Minuman', price: 10000, active: true },
-  { id: 24, name: 'Teh Panas', category: 'Minuman', price: 5000, active: true },
-  { id: 25, name: 'Teh Dingin', category: 'Minuman', price: 5000, active: true },
+  { id: 24, name: 'Teh', category: 'Minuman', price: 5000, active: true },
   { id: 26, name: 'Teh Tarek', category: 'Minuman', price: 5000, active: true },
   { id: 27, name: 'Lemon Tea', category: 'Minuman', price: 5000, active: true },
   { id: 28, name: 'Milo', category: 'Minuman', price: 5000, active: true },
@@ -61,10 +90,8 @@ const DEFAULT_MENU_ITEMS = [
   { id: 32, name: 'Nutrisari', category: 'Minuman', price: 5000, active: true },
   { id: 33, name: 'Jeruk Peras', category: 'Minuman', price: 5000, active: true },
   { id: 34, name: 'Jeruk Kasturi', category: 'Minuman', price: 5000, active: true },
-  { id: 35, name: 'Espresso Panas', category: 'Kopi', price: 10000, active: true },
-  { id: 36, name: 'Espresso Dingin', category: 'Kopi', price: 13000, active: true },
-  { id: 37, name: 'Sanger Panas', category: 'Kopi', price: 12000, active: true },
-  { id: 38, name: 'Sanger Dingin', category: 'Kopi', price: 15000, active: true },
+  { id: 35, name: 'Espresso', category: 'Kopi', price: 10000, active: true },
+  { id: 37, name: 'Sanger', category: 'Kopi', price: 12000, active: true },
   { id: 39, name: 'Cappucino', category: 'Kopi', price: 5000, active: true },
   { id: 40, name: 'Nescafe', category: 'Kopi', price: 5000, active: true },
   { id: 41, name: 'Nescafe Susu', category: 'Kopi', price: 8000, active: true },
@@ -285,7 +312,8 @@ const buildReceipt = (o, type) => {
   for (const item of (o?.items || [])) {
     if (kitchen) {
       content.push(receiptText(`${item.qty} x ${item.name}`, 'left', true));
-      if (item.note) content.push(receiptText(`    >> ${item.note}`, 'left', true));
+      if (item.optionNote) content.push(receiptText(`    >> ${item.optionNote}`, 'left', true));
+      if (item.customNote || (!item.optionNote && item.note)) content.push(receiptText(`    >> ${item.customNote || item.note}`, 'left', true));
     } else { content.push(receiptText(item.name)); content.push({ type: 'row', left: `${item.qty} x ${money(item.price)}`, right: money(item.qty * item.price) }); }
   }
   content.push(receiptDivider());
@@ -1066,6 +1094,8 @@ export default function App() {
   const [variantMilk, setVariantMilk] = useState(false);
   const [variantNum, setVariantNum] = useState(1);
   const [variantAdded, setVariantAdded] = useState([]); // ringkasan yang sudah ditambahkan di popup ini
+  const [variantToppings, setVariantToppings] = useState([]);
+  const [variantSpice, setVariantSpice] = useState('Normal');
 
   const [moveOrder, setMoveOrder] = useState(null);
   const [moveTarget, setMoveTarget] = useState('');
@@ -1262,9 +1292,40 @@ export default function App() {
         setUsersList(resUsers.data);
         write('z_users_cache', resUsers.data);
       }
-      if (resMenu.data && resMenu.data.length > 0) {
-        setItems(resMenu.data);
-        write('z_items_cache', resMenu.data);
+      // Sinkronisasi aman data menu standar:
+      // - Tidak menghapus menu yang sudah ada.
+      // - Tidak menimpa harga/stok/status menu yang sudah ada.
+      // - Mengembalikan menu standar yang tidak sengaja terhapus dari Supabase.
+      // - Menu varian suhu (Panas/Dingin) tetap disimpan sebagai data sumber agar
+      //   harga masing-masing suhu dapat digabungkan di tampilan Pesanan.
+      if (!resMenu.error) {
+        const remoteMenu = Array.isArray(resMenu.data) ? resMenu.data : [];
+        const normMenuName = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const existingNames = new Set(remoteMenu.map(x => normMenuName(x.name)));
+        const missingDefaults = DEFAULT_MENU_ITEMS.filter(x => !existingNames.has(normMenuName(x.name)));
+
+        let restoredMenu = [];
+        if (missingDefaults.length > 0) {
+          const payload = missingDefaults.map(({ name, category, price, active }) => ({
+            name, category, price, active: active !== false
+          }));
+          const { data: inserted, error: insertError } = await supabase
+            .from('menu_items').insert(payload).select('*');
+          if (!insertError && Array.isArray(inserted)) {
+            restoredMenu = inserted;
+          } else if (insertError) {
+            console.error('Pemulihan sebagian menu standar gagal:', insertError.message);
+          }
+        }
+
+        const combinedMenu = [...remoteMenu, ...restoredMenu];
+        // Bila tabel benar-benar kosong dan proses insert gagal, tampilkan data
+        // standar dari konstanta agar halaman kasir tetap dapat dibuka.
+        const finalMenu = combinedMenu.length ? combinedMenu : DEFAULT_MENU_ITEMS;
+        setItems(finalMenu);
+        write('z_items_cache', finalMenu);
+      } else {
+        console.error('Gagal membaca menu Supabase:', resMenu.error.message);
       }
       if (resOrders.data) setOrders(withQueue(resOrders.data));
       if (resLogs.data) setClearLogs(resLogs.data);
@@ -1711,10 +1772,64 @@ export default function App() {
   const menuTabs = [...(favNames.length ? ['Favorit'] : []), ...categories, 'Bakso'];
 
   const filtered = useMemo(() => {
-    let l = (items || []).filter(x => x.active && (category === 'Semua' || category === 'Favorit' || x.category === category) && x.name.toLowerCase().includes(query.toLowerCase()));
-    if (category === 'Favorit') l = l.filter(x => favNames.includes(x.name)).sort((a, b) => favNames.indexOf(a.name) - favNames.indexOf(b.name));
-    return l;
+    const active = (items || []).filter(x => x.active && (category === 'Semua' || category === 'Favorit' || x.category === category));
+    // Menu lama yang berupa topping tidak lagi menjadi item terpisah.
+    const clean = active.filter(x => !LEGACY_TOPPING_NAME.test(String(x.name || '').trim()) && !isLegacyMilkVariant(x, items));
+    const consumed = new Set();
+    const merged = [];
+
+    MENU_TEMPERATURES.forEach(config => {
+      const names = [config.name, ...config.aliases].map(normalizeMenuText);
+      const members = clean.filter(x => x.category === config.category && names.includes(normalizeMenuText(x.name)));
+      if (!members.length) return;
+      members.forEach(x => consumed.add(String(x.id)));
+      const canonical = members.find(x => normalizeMenuText(x.name) === normalizeMenuText(config.name));
+      const base = canonical || members.find(x => / panas$/i.test(x.name)) || members[0];
+      const prices = { ...config.prices };
+      members.forEach(x => {
+        const suffix = String(x.name).match(/\s+(Panas|Hangat|Dingin)$/i);
+        if (suffix) prices[suffix[1].toLowerCase()] = Number(x.price || 0);
+      });
+      merged.push({ ...base, name: config.name, price: prices.panas ?? base.price, _temperaturePrices: prices, _temperatureMembers: members, _isGroupedMenu: true });
+    });
+
+    clean.forEach(x => {
+      if (!consumed.has(String(x.id))) merged.push(x);
+    });
+    let result = merged.filter(x => String(x.name || '').toLowerCase().includes(query.toLowerCase()));
+    if (category === 'Favorit') result = result.filter(x => favNames.includes(x.name) || favNames.includes(baseName(x.name))).sort((a, b) => favNames.indexOf(a.name) - favNames.indexOf(b.name));
+    return result;
   }, [items, category, query, favNames]);
+
+  // Tampilan Kelola Menu: satukan varian suhu dan sembunyikan menu topping lama.
+  // Data asli tetap disimpan sampai Admin memilih Hapus pada grup terkait.
+  const adminMenuItems = useMemo(() => {
+    const source = [...(items || [])];
+    const clean = source.filter(x => !LEGACY_TOPPING_NAME.test(String(x.name || '').trim()) && !isLegacyMilkVariant(x, source));
+    const consumed = new Set();
+    const result = [];
+
+    MENU_TEMPERATURES.forEach(config => {
+      const names = [config.name, ...config.aliases].map(normalizeMenuText);
+      const members = clean.filter(x => x.category === config.category && names.includes(normalizeMenuText(x.name)));
+      if (!members.length) return;
+      members.forEach(x => consumed.add(String(x.id)));
+      const canonical = members.find(x => normalizeMenuText(x.name) === normalizeMenuText(config.name));
+      const base = canonical || members.find(x => / panas$/i.test(x.name)) || members[0];
+      const prices = { ...config.prices };
+      members.forEach(x => {
+        const suffix = String(x.name).match(/\s+(Panas|Hangat|Dingin)$/i);
+        if (suffix) prices[suffix[1].toLowerCase()] = Number(x.price || 0);
+      });
+      result.push({ ...base, name: config.name, price: prices.panas ?? base.price, _temperaturePrices: prices, _temperatureMembers: members, _legacyIds: members.map(x => x.id), _isGroupedMenu: true });
+    });
+
+    clean.forEach(x => {
+      if (!consumed.has(String(x.id))) result.push(x);
+    });
+    return result.sort((a, b) => String(a.category).localeCompare(String(b.category)) || String(a.name).localeCompare(String(b.name)));
+  }, [items]);
+
   const showBakso = (category === 'Semua' || category === 'Bakso') && 'bakso'.includes(query.trim().toLowerCase());
 
   const tableInfo = useMemo(() => {
@@ -1799,40 +1914,70 @@ export default function App() {
   const add = (item) => {
     if (item.sold_out) { flash(`${item.name} sedang habis.`, 2500); return; }
     if (item.stock != null && qtyOf(item) >= item.stock) { flash(`Stok ${item.name} tinggal ${item.stock}.`, 3000); return; }
-    if (item.category === 'Minuman' || item.category === 'Kopi') {
+    const isDrink = ['Minuman', 'Kopi'].includes(item.category) || !!item._temperaturePrices;
+    const isMie = /mie|mi /i.test(`${item.category} ${item.name}`);
+    const hasAddons = MENU_ADDONS.some(a => a.categories.includes(item.category));
+    if (isDrink || isMie || hasAddons) {
       setVariantTemp(''); setVariantMilk(false); setVariantNum(1); setVariantAdded([]);
+      setVariantToppings([]); setVariantSpice('Normal');
       setSelectedItemForVariant(item);
     } else addToCartDirect(item, false);
   };
 
-  const addToCartDirect = (item, pakaiSusu = false, suhu = '', qty = 1) => {
+  const addToCartDirect = (item, pakaiSusu = false, suhu = '', qty = 1, toppings = [], spice = '') => {
     const amount = Math.max(0, Number(qty) || 0);
     if (!amount) return;
-    const finalPrice = pakaiSusu ? item.price + 3000 : item.price;
-    const finalName = `${item.name}${suhu ? ` (${suhu})` : ''}${pakaiSusu ? ' + Susu' : ''}`;
-    const finalId = `${item.id}${suhu ? `-${suhu.toLowerCase().replace(/\\s+/g, '-')}` : ''}${pakaiSusu ? '-susu' : ''}`;
+    const addonTotal = (toppings || []).reduce((sum, a) => sum + Number(a.price || 0), 0);
+    const milkExtra = pakaiSusu ? (normalizeMenuText(item.name) === 'teh hijau' ? 2000 : 3000) : 0;
+    const finalPrice = Number((suhu && item._temperaturePrices?.[suhu.toLowerCase()] != null)
+      ? item._temperaturePrices[suhu.toLowerCase()]
+      : item.price) + milkExtra + addonTotal;
+    const addonLabels = (toppings || []).map(a => a.label);
+    if (spice && spice !== 'Normal' && /mie|mi /i.test(`${item.category} ${item.name}`)) addonLabels.push(spice);
+    const note = [
+      suhu ? `Suhu: ${suhu}` : '',
+      pakaiSusu ? 'Pakai susu' : '',
+      addonLabels.length ? `Tambahan: ${addonLabels.join(', ')}` : ''
+    ].filter(Boolean).join(' · ');
+    const optionKey = [suhu, pakaiSusu ? 'susu' : '', ...(toppings || []).map(a => a.id), spice && spice !== 'Normal' ? spice : ''].filter(Boolean).join('-');
+    const finalId = `${item.id}${optionKey ? `~${optionKey.toLowerCase().replace(/[^a-z0-9-]+/g, '-')}` : ''}`;
     buzz();
     setCart(old => {
       const found = old.find(x => x.id === finalId);
       return found
         ? old.map(x => x.id === finalId ? { ...x, qty: x.qty + amount } : x)
-        : [...old, { id: finalId, menuId: item.id, name: finalName, category: item.category, price: finalPrice, qty: amount, item_status: 'Baru' }];
+        : [...old, {
+            id: finalId, menuId: item.id, name: item.name, category: item.category,
+            price: finalPrice, qty: amount, item_status: 'Baru',
+            ...(note ? { optionNote: note } : {}),
+            ...(toppings?.length ? { addons: toppings.map(a => ({ id: a.id, label: a.label, price: a.price })) } : {}),
+            ...(suhu ? { temperature: suhu } : {}),
+            ...(pakaiSusu ? { milk: true } : {})
+          }];
     });
   };
 
   const addVariantOne = () => {
     const item = selectedItemForVariant;
     if (!item) return;
-    if (!variantTemp) { flash('Pilih suhu dulu: Panas, Hangat, atau Dingin.', 2500); return; }
+    const isDrink = ['Minuman', 'Kopi'].includes(item.category) || !!item._temperaturePrices;
+    if (isDrink && !variantTemp) { flash('Pilih suhu dulu: Panas, Hangat, atau Dingin.', 2500); return; }
     const qty = Math.max(1, Number(variantNum) || 1);
     if (item.stock != null && qtyOf(item) + qty > item.stock) {
       flash(`Stok ${item.name} hanya tersisa ${Math.max(0, item.stock - qtyOf(item))}.`, 3500);
       return;
     }
-    addToCartDirect(item, variantMilk, variantTemp, qty);
-    setVariantAdded(list => [...list, `${qty}× ${variantTemp}${variantMilk ? ' + Susu' : ''}`]);
-    // reset supaya pilihan berikutnya harus disengaja
+    const toppings = MENU_ADDONS.filter(a => variantToppings.includes(a.id));
+    addToCartDirect(item, variantMilk, variantTemp, qty, toppings, variantSpice);
+    const desc = [
+      variantTemp,
+      variantMilk ? 'Susu' : '',
+      ...toppings.map(a => `${a.label} +${money(a.price)}`),
+      variantSpice !== 'Normal' ? variantSpice : ''
+    ].filter(Boolean).join(' · ');
+    setVariantAdded(list => [...list, `${qty}× ${desc || item.name}`]);
     setVariantTemp(''); setVariantMilk(false); setVariantNum(1);
+    setVariantToppings([]); setVariantSpice('Normal');
   };
 
   const openBakso = () => { setBaksoPrice(''); setBaksoName(''); setBaksoOpen(true); };
@@ -1903,7 +2048,7 @@ export default function App() {
     }
   };
 
-  const openItemNote = (x) => { setNoteItem(x); setNoteDraft(x.note || ''); };
+  const openItemNote = (x) => { setNoteItem(x); setNoteDraft(x.customNote || (!x.optionNote ? x.note : '') || ''); };
   const toggleNoteChip = (p) => setNoteDraft(d => {
     const parts = d.split(',').map(s => s.trim()).filter(Boolean);
     return (parts.includes(p) ? parts.filter(s => s !== p) : [...parts, p]).join(', ');
@@ -1912,8 +2057,8 @@ export default function App() {
     const x = noteItem;
     if (!x) return;
     const text = noteDraft.trim();
-    const baseId = String(x.id).split('~')[0];
-    const newId = text ? `${baseId}~${text.toLowerCase().replace(/\s+/g, '_')}` : baseId;
+    const stableId = String(x.id).split('~note-')[0];
+    const newId = text ? `${stableId}~note-${text.toLowerCase().replace(/\s+/g, '_')}` : stableId;
 
     // Catat pilihan hanya pada menu yang sedang diedit.
     if (text) {
@@ -1935,7 +2080,7 @@ export default function App() {
       const rest = old.filter(c => c.id !== x.id);
       const dup = rest.find(c => c.id === newId);
       if (dup) return rest.map(c => c.id === newId ? { ...c, qty: c.qty + c0.qty } : c);
-      return old.map(c => c.id === x.id ? { ...c0, id: newId, note: text } : c);
+      return old.map(c => c.id === x.id ? { ...c0, id: newId, customNote: text } : c);
     });
     setNoteItem(null);
   };
@@ -2864,14 +3009,15 @@ export default function App() {
   const toggleMenuStatus = async (item) => {
     if (user?.role !== 'Admin') return;
     const newStatus = !item.active;
+    const ids = Array.isArray(item._legacyIds) && item._legacyIds.length ? item._legacyIds : [item.id];
     try {
-      const { error } = await supabase.from('menu_items').update({ active: newStatus }).eq('id', item.id);
+      const { error } = await supabase.from('menu_items').update({ active: newStatus }).in('id', ids);
       if (error) console.warn('Gagal update status di Supabase:', error.message);
     } catch (err) {
       console.warn('Network error update menu status:', err);
     }
     setItems(prev => {
-      const updated = prev.map(m => m.id === item.id ? { ...m, active: newStatus } : m);
+      const updated = prev.map(m => ids.some(id => String(id) === String(m.id)) ? { ...m, active: newStatus } : m);
       write('z_items_cache', updated);
       return updated;
     });
@@ -2880,23 +3026,29 @@ export default function App() {
 
   const deleteMenu = async (item) => {
     if (user?.role !== 'Admin') return;
-    if (!window.confirm(`Yakin ingin menghapus menu "${item.name}"?`)) return;
+    const ids = Array.isArray(item._legacyIds) && item._legacyIds.length ? item._legacyIds : [item.id];
+    const description = item._isGroupedMenu ? `semua varian suhu menu \"${item.name}\" (${ids.length} data)` : item._isLegacyToppingGroup ? `semua menu topping lama \"${item.name}\" (${ids.length} data)` : `menu \"${item.name}\"`;
+    if (!window.confirm(`Yakin ingin menghapus ${description} dari database? Tindakan ini tidak dapat dibatalkan.`)) return;
     try {
-      const { error } = await supabase.from('menu_items').delete().eq('id', item.id);
-      if (error) console.warn('Gagal hapus menu di Supabase:', error.message);
+      const { error } = await supabase.from('menu_items').delete().in('id', ids);
+      if (error) {
+        flash('Gagal menghapus menu dari Supabase: ' + error.message, 4500);
+        return;
+      }
     } catch (err) {
-      console.warn('Network error delete menu:', err);
+      flash('Gagal menghapus menu: ' + (err?.message || 'Koneksi bermasalah'), 4500);
+      return;
     }
     setItems(prev => {
-      const updated = prev.filter(m => m.id !== item.id);
+      const updated = prev.filter(m => !ids.some(id => String(id) === String(m.id)));
       write('z_items_cache', updated);
       return updated;
     });
-    if (editing === item.id) {
+    if (ids.some(id => String(id) === String(editing))) {
       setEditing(null);
       setMenuForm({ name: '', category: 'Mie', price: '' });
     }
-    flash(`Menu "${item.name}" berhasil dihapus.`, 3500);
+    flash(`${item._isGroupedMenu ? 'Semua varian' : item._isLegacyToppingGroup ? 'Menu topping lama' : 'Menu'} \"${item.name}\" berhasil dihapus.`, 3500);
   };
 
   const handlePageChange = (label) => {
@@ -3142,7 +3294,7 @@ export default function App() {
                 )}
                 {filtered.map(x => {
                   const q = qtyOf(x);
-                  const variant = x.category === 'Minuman' || x.category === 'Kopi';
+                  const variant = x.category === 'Minuman' || x.category === 'Kopi' || !!x._temperaturePrices;
                   return (
                     <div key={x.id} className={'po-item ' + (q > 0 ? 'on ' : '') + (x.sold_out ? 'off' : '')} role="button" tabIndex={0}
                       onPointerDown={() => pressStart(x)} onPointerUp={pressEnd} onPointerLeave={pressEnd} onPointerCancel={pressEnd}
@@ -3214,7 +3366,7 @@ export default function App() {
                           <button type="button" onClick={() => openItemNote(x)}
                             style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, padding: '6px 10px', borderRadius: 8, border: `1.5px dashed ${x.note ? '#f59e0b' : '#cbd5e1'}`, background: x.note ? '#fffbeb' : '#fff', color: x.note ? '#92400e' : '#64748b', fontSize: '.78rem', fontWeight: 600, cursor: 'pointer', maxWidth: '100%', textAlign: 'left' }}>
                             <Pencil size={13} />
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.note || 'Catatan'}</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{[x.optionNote, x.customNote || (!x.optionNote ? x.note : '')].filter(Boolean).join(' · ') || 'Catatan'}</span>
                           </button>
                         </div>
                         <strong>{money(x.price * x.qty)}</strong>
@@ -3627,7 +3779,7 @@ export default function App() {
                                       <span className="kds-item-qty">{it.qty}×</span>
                                       <span className="kds-item-title">{it.name}</span>
                                     </div>
-                                    {it.note && <span className="kds-item-note">» {it.note}</span>}
+                                    {(it.optionNote || it.customNote || it.note) && <span className="kds-item-note">» {[it.optionNote, it.customNote || (!it.optionNote ? it.note : '')].filter(Boolean).join(' · ')}</span>}
                                   </div>
 
                                   {canCook && ist0 !== 'Diantar' ? (
@@ -3832,7 +3984,7 @@ export default function App() {
                                       <span className="exp-item-qty">{it.qty}×</span>
                                       <span className="exp-item-title">{it.name}</span>
                                     </div>
-                                    {it.note && <span className="exp-item-note">» {it.note}</span>}
+                                    {(it.optionNote || it.customNote || it.note) && <span className="exp-item-note">» {[it.optionNote, it.customNote || (!it.optionNote ? it.note : '')].filter(Boolean).join(' · ')}</span>}
                                   </div>
                                   {s === 'Siap' && canDeliver ? (
                                     <button type="button" className="exp-item-btn-deliver" onClick={() => setItemStatus(o, idx, 'Diantar')}>
@@ -4105,17 +4257,17 @@ export default function App() {
                 <table>
                   <thead><tr><th>Nama menu</th><th>Kategori</th><th>Harga</th><th>Status</th><th>Aksi</th></tr></thead>
                   <tbody>
-                    {items.map(x => (
-                      <tr key={x.id}>
-                        <td data-label="Nama menu"><b>{x.name}</b></td>
+                    {adminMenuItems.map(x => (
+                      <tr key={String(x.id)}>
+                        <td data-label="Nama menu"><b>{x.name}</b>{x._isGroupedMenu && <div className="muted" style={{ fontSize: '11px' }}>Varian digabung: {x._temperatureMembers.map(v => v.name.replace(new RegExp('\s+(Panas|Hangat|Dingin)$', 'i'), '') === x.name ? v.name.slice(x.name.length).trim() : v.name).join(', ')}</div>}</td>
                         <td data-label="Kategori"><span className="cat-badge">{x.category}</span></td>
-                        <td data-label="Harga">{money(x.price)}</td>
+                        <td data-label="Harga">{x._isGroupedMenu ? Object.entries(x._temperaturePrices).map(([temp, price]) => <div key={temp}>{temp[0].toUpperCase() + temp.slice(1)}: {money(price)}</div>) : x._isLegacyToppingGroup ? x._legacyMembers.map(v => <div key={v.id}>{money(v.price)}</div>) : money(x.price)}</td>
                         <td data-label="Status"><span className={x.active ? 'status-done' : 'status-off'}>{!x.active ? 'Nonaktif' : x.sold_out ? 'Habis' : x.stock != null ? `Stok ${x.stock}` : 'Aktif'}</span></td>
                         <td>
                           <div className="action-cell">
                             <button className="text-btn" onClick={() => { setEditing(x.id); setMenuForm({ name: x.name, category: x.category, price: x.price }) }}>Edit</button>
                             <button className="text-btn" onClick={() => toggleMenuStatus(x)}>{x.active ? 'Nonaktifkan' : 'Aktifkan'}</button>
-                            <button className="text-btn" style={{ color: '#dc2626' }} onClick={() => deleteMenu(x)}>Hapus</button>
+                            <button className="text-btn" style={{ color: '#dc2626' }} onClick={() => deleteMenu(x)}>{x._isGroupedMenu ? 'Hapus menu' : 'Hapus'}</button>
                           </div>
                         </td>
                       </tr>
@@ -4921,67 +5073,88 @@ export default function App() {
       {/* ================= MODAL VARIAN / BAKSO ================= */}
       {selectedItemForVariant && (() => {
         const item = selectedItemForVariant;
-        const extra = variantMilk ? 3000 : 0;
+        const isDrink = ['Minuman', 'Kopi'].includes(item.category) || !!item._temperaturePrices;
+        const isMie = /mie|mi /i.test(`${item.category} ${item.name}`);
+        const milkExtra = variantMilk ? (normalizeMenuText(item.name) === 'teh hijau' ? 2000 : 3000) : 0;
+        const extra = milkExtra + MENU_ADDONS.filter(a => variantToppings.includes(a.id)).reduce((s, a) => s + a.price, 0);
         const num = Math.max(1, Number(variantNum) || 1);
         const temps = [
           ['Panas', Flame, '#ea580c', '#fff7ed'],
           ['Hangat', Coffee, '#d97706', '#fffbeb'],
           ['Dingin', Snowflake, '#0284c7', '#f0f9ff']
         ];
+        const basePrice = variantTemp && item._temperaturePrices?.[variantTemp.toLowerCase()] != null
+          ? item._temperaturePrices[variantTemp.toLowerCase()] : Number(item.price || 0);
         const bigBtn = (on, color, bg) => ({
-          minHeight: 64, borderRadius: 14, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
-          border: `2.5px solid ${on ? color : '#e2e8f0'}`, background: on ? bg : '#fff', color: on ? color : '#475569',
-          fontWeight: 800, fontSize: '.95rem', cursor: 'pointer'
+          minHeight: 54, borderRadius: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
+          border: `2px solid ${on ? color : '#e2e8f0'}`, background: on ? bg : '#fff', color: on ? color : '#475569',
+          fontWeight: 800, fontSize: '.9rem', cursor: 'pointer'
         });
         return (
           <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setSelectedItemForVariant(null); }}>
             <div className="modal" style={{ width: 'calc(100% - 24px)', maxWidth: 440, maxHeight: 'min(92dvh, 760px)', overflowY: 'auto', padding: 'clamp(16px, 4vw, 22px)' }}>
               <button className="modal-close" onClick={() => setSelectedItemForVariant(null)} aria-label="Tutup"><X /></button>
-              <p className="eyebrow">TAMBAH MINUMAN</p>
+              <p className="eyebrow">{isDrink ? 'PILIHAN MINUMAN' : 'TAMBAHAN MENU'}</p>
               <h2 style={{ marginBottom: 2, paddingRight: 44 }}>{item.name}</h2>
-              <p className="muted" style={{ margin: '0 0 14px', fontSize: '.84rem' }}>{money(item.price)} per gelas</p>
+              <p className="muted" style={{ margin: '0 0 14px', fontSize: '.84rem' }}>Harga dasar {money(item.price)}</p>
 
-              <span className="pay2-label" style={{ marginTop: 0 }}>1. Pilih suhu</span>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
-                {temps.map(([t, Icon, color, bg]) => (
-                  <button key={t} type="button" onClick={() => setVariantTemp(t)} style={bigBtn(variantTemp === t, color, bg)}>
-                    <Icon size={22} />{t}
-                  </button>
-                ))}
-              </div>
+              {isDrink && <>
+                <span className="pay2-label" style={{ marginTop: 0 }}>1. Pilih suhu</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                  {temps.map(([t, Icon, color, bg]) => (
+                    <button key={t} type="button" onClick={() => setVariantTemp(t)} style={bigBtn(variantTemp === t, color, bg)}>
+                      <Icon size={20} />{t}
+                      {item._temperaturePrices?.[t.toLowerCase()] != null && <small>{money(item._temperaturePrices[t.toLowerCase()])}</small>}
+                    </button>
+                  ))}
+                </div>
+                <span className="pay2-label">2. Susu</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                  <button type="button" onClick={() => setVariantMilk(false)} style={bigBtn(!variantMilk, '#2563eb', '#eff6ff')}>Tanpa susu</button>
+                  <button type="button" onClick={() => setVariantMilk(true)} style={bigBtn(variantMilk, '#2563eb', '#eff6ff')}>Pakai susu <small>+{money(normalizeMenuText(item.name) === 'teh hijau' ? 2000 : 3000)}</small></button>
+                </div>
+              </>}
 
-              <span className="pay2-label">2. Pakai susu?</span>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
-                <button type="button" onClick={() => setVariantMilk(false)} style={bigBtn(!variantMilk, '#2563eb', '#eff6ff')}>
-                  Tanpa susu
-                </button>
-                <button type="button" onClick={() => setVariantMilk(true)} style={bigBtn(variantMilk, '#2563eb', '#eff6ff')}>
-                  Pakai susu
-                  <small style={{ fontWeight: 600, fontSize: '.72rem' }}>+{money(3000)}</small>
-                </button>
-              </div>
+              {MENU_ADDONS.filter(a => a.categories.includes(item.category)).length > 0 && (
+                <>
+                  <span className="pay2-label">{isDrink ? '3.' : '1.'} Tambahan</span>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                    {MENU_ADDONS.filter(a => a.categories.includes(item.category)).map(a => {
+                      const on = variantToppings.includes(a.id);
+                      return <button key={a.id} type="button" onClick={() => setVariantToppings(old => on ? old.filter(x => x !== a.id) : [...old, a.id])}
+                        style={bigBtn(on, '#15803d', '#f0fdf4')}>
+                        {on ? '✓ ' : '+ '}{a.label}<small>{on ? 'Dipilih' : `+${money(a.price)}`}</small>
+                      </button>;
+                    })}
+                  </div>
+                </>
+              )}
 
-              <span className="pay2-label">3. Jumlah</span>
+              {isMie && <>
+                <span className="pay2-label">{isDrink ? '4.' : '2.'} Level pedas</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                  {SPICE_LEVELS.map(level => <button key={level} type="button" onClick={() => setVariantSpice(level)}
+                    style={bigBtn(variantSpice === level, '#ea580c', '#fff7ed')}>{level}</button>)}
+                </div>
+              </>}
+
+              <span className="pay2-label">{isDrink ? '5.' : isMie ? '3.' : '2.'} Jumlah</span>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 22 }}>
                 <button type="button" aria-label="Kurangi" disabled={num <= 1} onClick={() => setVariantNum(Math.max(1, num - 1))}
-                  style={{ width: 58, height: 58, borderRadius: '50%', border: '2px solid #cbd5e1', background: '#fff', display: 'grid', placeItems: 'center', opacity: num <= 1 ? .4 : 1 }}>
-                  <Minus size={24} />
-                </button>
+                  style={{ width: 50, height: 50, borderRadius: '50%', border: '2px solid #cbd5e1', background: '#fff', display: 'grid', placeItems: 'center', opacity: num <= 1 ? .4 : 1 }}><Minus size={22} /></button>
                 <b style={{ minWidth: 48, textAlign: 'center', fontSize: '2rem', fontVariantNumeric: 'tabular-nums' }}>{num}</b>
                 <button type="button" aria-label="Tambah" onClick={() => setVariantNum(num + 1)}
-                  style={{ width: 58, height: 58, borderRadius: '50%', border: '2px solid #2563eb', background: '#2563eb', color: '#fff', display: 'grid', placeItems: 'center' }}>
-                  <Plus size={24} />
-                </button>
+                  style={{ width: 50, height: 50, borderRadius: '50%', border: '2px solid #2563eb', background: '#2563eb', color: '#fff', display: 'grid', placeItems: 'center' }}><Plus size={22} /></button>
               </div>
 
               <div style={{ marginTop: 16, padding: '10px 12px', borderRadius: 12, background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: '.88rem', color: '#334155', fontWeight: 600 }}>
-                  {variantTemp ? `${num}× ${variantTemp}${variantMilk ? ' + Susu' : ''}` : 'Pilih suhu dulu'}
+                <span style={{ fontSize: '.85rem', color: '#334155', fontWeight: 600 }}>
+                  {num}× {item.name}{variantTemp ? ` · ${variantTemp}` : ''}{variantMilk ? ' · Susu' : ''}{variantToppings.length ? ` · ${MENU_ADDONS.filter(a => variantToppings.includes(a.id)).map(a => a.label).join(', ')}` : ''}{isMie && variantSpice !== 'Normal' ? ` · ${variantSpice}` : ''}
                 </span>
-                <b style={{ fontSize: '1.05rem' }}>{money((item.price + extra) * num)}</b>
+                <b style={{ fontSize: '1.05rem', whiteSpace: 'nowrap' }}>{money((basePrice + extra) * num)}</b>
               </div>
 
-              <button className="primary full large" disabled={!variantTemp} style={{ minHeight: 54, marginTop: 12 }} onClick={addVariantOne}>
+              <button className="primary full large" disabled={isDrink && !variantTemp} style={{ minHeight: 54, marginTop: 12 }} onClick={addVariantOne}>
                 <Plus size={18} /> Tambah ke Keranjang
               </button>
 
@@ -4991,7 +5164,6 @@ export default function App() {
                   {variantAdded.map((a, i) => <div key={i}>{a}</div>)}
                 </div>
               )}
-
               <button className="po-go alt" style={{ width: '100%', marginTop: 10 }} onClick={() => setSelectedItemForVariant(null)}>
                 {variantAdded.length > 0 ? 'Selesai' : 'Batal'}
               </button>

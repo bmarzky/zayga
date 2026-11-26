@@ -1175,6 +1175,7 @@ export default function App() {
   const bleReconnecting = useRef(false); // mencegah sambung ulang ganda
   const [mobileSettingsView, setMobileSettingsView] = useState('main'); // 'main', 'akun', 'log'
   const [showAdvancedPrint, setShowAdvancedPrint] = useState(false);
+  const [showSpeakerGuide, setShowSpeakerGuide] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [menuForm, setMenuForm] = useState({ name: '', category: 'Mie', price: '' });
@@ -4507,42 +4508,113 @@ export default function App() {
 
           /* ---------- Sub: Suara & Notifikasi ---------- */
           if (view === 'suara') {
-            const openAndroidBluetoothSettings = () => {
-              const ua = navigator.userAgent || '';
-              if (!/Android/i.test(ua)) { flash('Buka pengaturan Bluetooth perangkat ini secara manual.', 5000); return; }
-              try {
-                window.location.href = 'intent:#Intent;action=android.settings.BLUETOOTH_SETTINGS;end';
-                window.setTimeout(() => flash('Jika tidak terbuka, buka Pengaturan Android → Bluetooth secara manual.', 6000), 1200);
-              } catch (err) { flash('Buka Pengaturan Android → Bluetooth secara manual.', 6000); }
-            };
+            const isCustomAlarm = customAlarmName !== 'kitchen-alarm.mp3';
             return wrap(<>
               {back('Suara & Notifikasi')}
-              <div className="sound-settings sound-settings-minimal">
-                <div className="sound-setting-row">
-                  <div className="sound-row-icon amber"><Volume2 size={20}/></div>
-                  <div className="sound-row-main"><div className="sound-row-title">Alarm pesanan</div><div className="sound-row-sub">{audioOnHere ? 'Aktif' : 'Nonaktif'}</div></div>
-                  {!isDapur && <label className="ms-switch" aria-label="Aktifkan alarm"><input type="checkbox" checked={centralAudioDevice} onChange={e => e.target.checked ? activateCentralAudio() : disableCentralAudio()}/><span className="ms-slider"></span></label>}
+              <div className="ms-group">
+                <div className="ms-row">
+                  <div className="ms-row-start">
+                    <div className={'ms-icon-box ' + (audioOnHere ? 'green' : 'amber')}><Volume2 size={20} /></div>
+                    <div className="ms-row-text">
+                      <span className="ms-row-label">Alarm pesanan</span>
+                      <span className="ms-row-sub">{audioOnHere ? '✓ Aktif di HP ini' : otherAudio ? `Aktif di ${otherAudio.deviceName}` : 'Nonaktif'}</span>
+                    </div>
+                  </div>
+                  {isDapur
+                    ? <span className="ms-chip">Selalu aktif</span>
+                    : (
+                      <label className="ms-switch" aria-label="Aktifkan alarm pesanan">
+                        <input type="checkbox" checked={centralAudioDevice} onChange={e => e.target.checked ? activateCentralAudio() : disableCentralAudio()} />
+                        <span className="ms-slider"></span>
+                      </label>
+                    )}
                 </div>
-                <div className="sound-setting-row sound-row-action">
-                  <div className="sound-row-icon"><Music size={20}/></div>
-                  <div className="sound-row-main"><div className="sound-row-title">Suara alarm</div><div className="sound-row-sub sound-file-name">{customAlarmName}</div></div>
-                  <button type="button" className="sound-compact-button" disabled={alarmFileBusy} onClick={() => alarmFileInputRef.current?.click()}>{alarmFileBusy ? '...' : 'Pilih'}</button>
-                  <input ref={alarmFileInputRef} type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a" onChange={handleAlarmFileChange} style={{display:'none'}}/>
+                <div className="ms-row">
+                  <div className="ms-row-start">
+                    <div className="ms-icon-box blue"><Music size={20} /></div>
+                    <div className="ms-row-text">
+                      <span className="ms-row-label">Suara alarm</span>
+                      <span className="ms-row-sub" style={{ overflowWrap: 'anywhere' }}>{isCustomAlarm ? customAlarmName : 'Suara bawaan'}</span>
+                    </div>
+                  </div>
+                  <button type="button" className="ms-btn-action primary" disabled={alarmFileBusy} onClick={() => alarmFileInputRef.current?.click()}>
+                    {alarmFileBusy ? 'Memproses...' : 'Pilih file'}
+                  </button>
+                  <input ref={alarmFileInputRef} type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a" onChange={handleAlarmFileChange} style={{ display: 'none' }} />
                 </div>
-                <div className="sound-setting-row sound-row-action">
-                  <div className="sound-row-icon"><Volume2 size={20}/></div>
-                  <div className="sound-row-main"><div className="sound-row-title">Tes suara</div></div>
-                  <button type="button" className="sound-compact-button" disabled={alarmFileBusy} onClick={previewKitchenAlarm}>Putar</button>
+                {isCustomAlarm && (
+                  <div className="ms-row">
+                    <div className="ms-row-start">
+                      <div className="ms-icon-box red"><RotateCcw size={19} /></div>
+                      <div className="ms-row-text">
+                        <span className="ms-row-label">Suara bawaan</span>
+                        <span className="ms-row-sub">Hapus file pilihan dan pakai alarm awal</span>
+                      </div>
+                    </div>
+                    <button type="button" className="ms-btn-action danger" disabled={alarmFileBusy} onClick={resetAlarmFile}>Reset</button>
+                  </div>
+                )}
+                <div className="ms-row">
+                  <div className="ms-row-start">
+                    <div className="ms-icon-box slate"><RefreshCw size={19} /></div>
+                    <div className="ms-row-text">
+                      <span className="ms-row-label">Tes suara</span>
+                      <span className="ms-row-sub">Periksa bunyi dan volume alarm</span>
+                    </div>
+                  </div>
+                  <button type="button" className="ms-btn-action secondary" disabled={alarmFileBusy} onClick={previewKitchenAlarm}>Putar tes</button>
                 </div>
-                {customAlarmName !== 'kitchen-alarm.mp3' && <div className="sound-setting-row sound-row-action"><div className="sound-row-icon"><RotateCcw size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Suara bawaan</div></div><button type="button" className="sound-compact-button" disabled={alarmFileBusy} onClick={resetAlarmFile}>Reset</button></div>}
-                {audioOnHere && <div className="sound-setting-row sound-row-action"><div className="sound-row-icon amber"><Bell size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Tes alarm pesanan</div></div><button type="button" className="sound-compact-button" onClick={playCentralKitchenAlarm}>Putar</button></div>}
-                <div className="sound-setting-row sound-row-action" role="button" tabIndex={0} onClick={openAndroidBluetoothSettings} onKeyDown={e => e.key === 'Enter' && openAndroidBluetoothSettings()}>
-                  <div className="sound-row-icon"><Bluetooth size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Bluetooth</div><div className="sound-row-sub">Hubungkan speaker</div></div><ChevronRight size={18} className="sound-row-chevron"/>
+                {audioOnHere && (
+                  <div className="ms-row">
+                    <div className="ms-row-start">
+                      <div className="ms-icon-box amber"><Bell size={20} /></div>
+                      <div className="ms-row-text">
+                        <span className="ms-row-label">Tes alarm pesanan</span>
+                        <span className="ms-row-sub">Bunyikan alarm seperti saat pesanan masuk</span>
+                      </div>
+                    </div>
+                    <button type="button" className="ms-btn-action secondary" onClick={playCentralKitchenAlarm}>Putar</button>
+                  </div>
+                )}
+              </div>
+              <p className="ms-footnote">File suara hanya disimpan di perangkat ini (maksimal 15 MB). Biarkan aplikasi tetap terbuka agar alarm dapat berbunyi.</p>
+
+              <div className="ms-group" style={{ marginTop: 18 }}>
+                <div className="ms-row">
+                  <div className="ms-row-start">
+                    <div className={'ms-icon-box ' + (notifPerm === 'granted' ? 'green' : 'amber')}><Bell size={20} /></div>
+                    <div className="ms-row-text">
+                      <span className="ms-row-label">Notifikasi</span>
+                      <span className="ms-row-sub">{notifPerm === 'granted' ? '✓ Diizinkan' : notifLabel}</span>
+                    </div>
+                  </div>
+                  {notifPerm !== 'granted'
+                    ? <button type="button" className="ms-btn-action primary" onClick={requestNotificationPermission}>Izinkan</button>
+                    : <button type="button" className="ms-btn-action secondary" onClick={testNotification}>Tes</button>}
                 </div>
-                <div className="sound-setting-row sound-row-action">
-                  <div className="sound-row-icon green"><Bell size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Notifikasi</div><div className="sound-row-sub">{notifLabel}</div></div>
-                  {notifPerm !== 'granted' ? <button type="button" className="sound-compact-button" onClick={requestNotificationPermission}>Izinkan</button> : <button type="button" className="sound-compact-button" onClick={testNotification}>Tes</button>}
+                <div className="ms-row">
+                  <div className="ms-row-start">
+                    <div className="ms-icon-box blue"><Bluetooth size={20} /></div>
+                    <div className="ms-row-text">
+                      <span className="ms-row-label">Speaker Bluetooth</span>
+                      <span className="ms-row-sub">Disambungkan lewat Pengaturan HP</span>
+                    </div>
+                  </div>
+                  <button type="button" className="ms-btn-action primary" aria-expanded={showSpeakerGuide} onClick={() => setShowSpeakerGuide(v => !v)}>
+                    <Bluetooth size={14} /> {showSpeakerGuide ? 'Tutup' : 'Sambungkan'}
+                  </button>
                 </div>
+                {showSpeakerGuide && (
+                  <div className="ms-expand">
+                    <ol className="ms-row-sub" style={{ margin: '0 0 12px', paddingLeft: 18, lineHeight: 1.7 }}>
+                      <li>Nyalakan speaker dan aktifkan mode pairing.</li>
+                      <li>Di HP, buka Pengaturan → Bluetooth.</li>
+                      <li>Pilih nama speaker sampai statusnya tersambung.</li>
+                      <li>Kembali ke sini, lalu tekan Putar tes.</li>
+                    </ol>
+                    <button type="button" className="ms-btn-action secondary full" disabled={alarmFileBusy} onClick={previewKitchenAlarm}>Putar tes</button>
+                  </div>
+                )}
               </div>
             </>);
           }

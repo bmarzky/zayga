@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ChevronRight, LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio, List, Rows3, Umbrella, Bluetooth, ArrowLeft } from 'lucide-react';
+import { ChevronRight, LayoutDashboard, ShoppingCart, Utensils, ClipboardList, BarChart3, Settings, Search, Plus, Minus, Trash2, Printer, LogOut, Coffee, Menu as MenuIcon, X, CheckCircle2, MapPin, UserRound, Clock, Wallet, ShieldAlert, UserPlus, Users, Eye, EyeOff, Flame, Snowflake, Check, ArrowRightLeft, Server, Smartphone, RefreshCw, Save, Pencil, LayoutGrid, ChefHat, Lock, WifiOff, Percent, Scissors, RotateCcw, Bell, TrendingUp, TrendingDown, Crown, Package, AlertTriangle, Volume2, Maximize2, Minimize2, CheckCheck, Radio, List, Rows3, Umbrella, Bluetooth, ArrowLeft, Music } from 'lucide-react';
 import { supabase } from './supabase';
 import './app.css';
 // import './dash.css';
@@ -16,6 +16,49 @@ const moneyShort = n => {
 };
 const read = (k, f) => { try { return JSON.parse(localStorage.getItem(k)) ?? f } catch { return f } };
 const write = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} };
+
+// Penyimpanan file alarm per perangkat menggunakan IndexedDB (tidak membebani localStorage).
+const ALARM_DB_NAME = 'zayga-pos-media';
+const ALARM_DB_STORE = 'sounds';
+const openAlarmDB = () => new Promise((resolve, reject) => {
+  if (!('indexedDB' in window)) return reject(new Error('Browser tidak mendukung penyimpanan file audio.'));
+  const request = indexedDB.open(ALARM_DB_NAME, 1);
+  request.onupgradeneeded = () => {
+    const db = request.result;
+    if (!db.objectStoreNames.contains(ALARM_DB_STORE)) db.createObjectStore(ALARM_DB_STORE);
+  };
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error || new Error('Gagal membuka penyimpanan audio.'));
+});
+const alarmStorageKey = (deviceId) => `kitchen-alarm:${deviceId || getDeviceId()}`;
+const saveAlarmFile = async (file, deviceId) => {
+  const db = await openAlarmDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(ALARM_DB_STORE, 'readwrite');
+    tx.objectStore(ALARM_DB_STORE).put({ blob: file, name: file.name, type: file.type || 'audio/mpeg', deviceId }, alarmStorageKey(deviceId));
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error || new Error('Gagal menyimpan file audio.'));
+  });
+  db.close();
+};
+const loadAlarmFile = async (deviceId) => {
+  const db = await openAlarmDB();
+  const value = await new Promise((resolve, reject) => {
+    const tx = db.transaction(ALARM_DB_STORE, 'readonly');
+    const request = tx.objectStore(ALARM_DB_STORE).get(alarmStorageKey(deviceId));
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error('Gagal membaca file audio.'));
+  });
+  db.close(); return value;
+};
+const deleteAlarmFile = async (deviceId) => {
+  const db = await openAlarmDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(ALARM_DB_STORE, 'readwrite');
+    tx.objectStore(ALARM_DB_STORE).delete(alarmStorageKey(deviceId));
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error || new Error('Gagal menghapus file audio.'));
+  });
+  db.close();
+};
 
 const BAKSO_ID = 'bakso-custom';
 
@@ -1060,6 +1103,11 @@ export default function App() {
   const [centralAudioDevice, setCentralAudioDevice] = useState(() => read('z_central_audio_device', false));
   const [centralAudioReady, setCentralAudioReady] = useState(false);
   const kitchenAudioRef = useRef(null);
+  const alarmAudioUrlRef = useRef(null);
+  const alarmAudioNameRef = useRef('kitchen-alarm.mp3');
+  const alarmFileInputRef = useRef(null);
+  const [customAlarmName, setCustomAlarmName] = useState('kitchen-alarm.mp3');
+  const [alarmFileBusy, setAlarmFileBusy] = useState(false);
   // ---- Status perangkat (presence) ----
   const [deviceId] = useState(() => getDeviceId());
   const [deviceName, setDeviceName] = useState(() => read('z_device_name', '') || guessDeviceName());
@@ -1194,26 +1242,80 @@ export default function App() {
     flash({ title: 'Tes notifikasi berhasil', body: 'Tampilan notifikasi Zayga POS sudah aktif di dalam aplikasi.', type: 'success' }, 3500);
   };
 
-  // File audio diletakkan di folder public dengan nama kitchen-alarm.mp3.
-  // Hanya perangkat yang ditandai sebagai pusat audio yang boleh memutarnya.
-  // [FIX] Objek Audio dibuat otomatis jika belum ada (mis. setelah halaman di-reload),
-  // sehingga alarm tidak bisu sampai kasir mengaktifkan ulang pusat audio.
+  // Muat file alarm pilihan dari penyimpanan lokal perangkat. File tidak diunggah ke server.
+  useEffect(() => {
+    let alive = true;
+    loadAlarmFile(deviceId).then(saved => {
+      if (!alive || !saved?.blob) return;
+      const url = URL.createObjectURL(saved.blob);
+      if (alarmAudioUrlRef.current) URL.revokeObjectURL(alarmAudioUrlRef.current);
+      alarmAudioUrlRef.current = url;
+      alarmAudioNameRef.current = saved.name || 'Suara kustom';
+      setCustomAlarmName(alarmAudioNameRef.current);
+      if (kitchenAudioRef.current) {
+        kitchenAudioRef.current.pause(); kitchenAudioRef.current.src = url; kitchenAudioRef.current.load();
+      }
+    }).catch(err => console.warn('File alarm kustom belum dapat dimuat:', err));
+    return () => { alive = false; };
+  }, []);
+
+  const getKitchenAlarmSource = () => alarmAudioUrlRef.current || '/kitchen-alarm.mp3';
+  const ensureKitchenAudio = () => {
+    const src = getKitchenAlarmSource();
+    if (!kitchenAudioRef.current) {
+      const a = new Audio(src); a.preload = 'auto'; a.volume = 1; kitchenAudioRef.current = a;
+    } else if (kitchenAudioRef.current.src !== new URL(src, window.location.href).href) {
+      kitchenAudioRef.current.pause(); kitchenAudioRef.current.src = src; kitchenAudioRef.current.load();
+    }
+    return kitchenAudioRef.current;
+  };
+
   const playCentralKitchenAlarm = () => {
     if (!read('z_central_audio_device', false) && userRef.current?.role !== 'Dapur') return;
     try {
-      if (!kitchenAudioRef.current) {
-        const a = new Audio('/kitchen-alarm.mp3');
-        a.preload = 'auto';
-        a.volume = 1;
-        kitchenAudioRef.current = a;
-      }
-      const audio = kitchenAudioRef.current;
-      audio.pause();
-      audio.currentTime = 0;
+      const audio = ensureKitchenAudio(); audio.pause(); audio.currentTime = 0;
       audio.play().catch(err => console.warn('Audio dapur tidak dapat diputar:', err));
-    } catch (err) {
-      console.warn('Gagal memutar alarm dapur:', err);
-    }
+    } catch (err) { console.warn('Gagal memutar alarm dapur:', err); }
+  };
+
+  const previewKitchenAlarm = async () => {
+    try {
+      const audio = ensureKitchenAudio(); audio.pause(); audio.currentTime = 0;
+      await audio.play();
+    } catch (err) { flash('Suara belum bisa diputar. Coba aktifkan pusat audio terlebih dahulu.', 4500); }
+  };
+
+  const handleAlarmFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const audioExtensionOk = /\.(mp3|wav|ogg|m4a|aac|webm)$/i.test(file.name || '');
+    if (!(file.type || '').startsWith('audio/') && !audioExtensionOk) { flash('Pilih file audio seperti MP3, WAV, atau OGG.', 4000); return; }
+    if (file.size > 15 * 1024 * 1024) { flash('Ukuran file suara maksimal 15 MB.', 4000); return; }
+    setAlarmFileBusy(true);
+    try {
+      await saveAlarmFile(file, deviceId);
+      const url = URL.createObjectURL(file);
+      if (alarmAudioUrlRef.current) URL.revokeObjectURL(alarmAudioUrlRef.current);
+      alarmAudioUrlRef.current = url; alarmAudioNameRef.current = file.name;
+      setCustomAlarmName(file.name);
+      if (kitchenAudioRef.current) { kitchenAudioRef.current.pause(); kitchenAudioRef.current.src = url; kitchenAudioRef.current.load(); }
+      flash('File suara berhasil disimpan di perangkat ini.', 4000);
+    } catch (err) { flash('Gagal menyimpan suara: ' + (err?.message || 'kesalahan penyimpanan'), 5000); }
+    finally { setAlarmFileBusy(false); }
+  };
+
+  const resetAlarmFile = async () => {
+    setAlarmFileBusy(true);
+    try {
+      await deleteAlarmFile(deviceId);
+      if (alarmAudioUrlRef.current) URL.revokeObjectURL(alarmAudioUrlRef.current);
+      alarmAudioUrlRef.current = null; alarmAudioNameRef.current = 'kitchen-alarm.mp3';
+      setCustomAlarmName('kitchen-alarm.mp3');
+      if (kitchenAudioRef.current) { kitchenAudioRef.current.pause(); kitchenAudioRef.current.src = '/kitchen-alarm.mp3'; kitchenAudioRef.current.load(); }
+      flash('Suara dikembalikan ke alarm bawaan.', 3500);
+    } catch (err) { flash('Gagal mengembalikan suara bawaan: ' + (err?.message || ''), 4500); }
+    finally { setAlarmFileBusy(false); }
   };
 
   // Bunyikan alarm dapur: lokal (jika perangkat ini pusat audio) + kirim sinyal ke perangkat pusat audio.
@@ -1236,10 +1338,7 @@ export default function App() {
 
   const activateCentralAudio = async () => {
     try {
-      const audio = new Audio('/kitchen-alarm.mp3');
-      audio.preload = 'auto';
-      audio.volume = 1;
-      kitchenAudioRef.current = audio;
+      const audio = ensureKitchenAudio();
       // Pemutaran dari klik pengguna membuka izin audio browser untuk sesi ini.
       await audio.play();
       setCentralAudioReady(true);
@@ -1248,7 +1347,7 @@ export default function App() {
       flash('Perangkat berhasil diaktifkan sebagai pusat audio dapur.', 4500);
     } catch (err) {
       setCentralAudioReady(false);
-      flash('Audio belum bisa diputar. Pastikan file public/kitchen-alarm.mp3 tersedia dan klik aktivasi lagi.', 6500);
+      flash('Audio belum bisa diputar. Periksa file suara dan volume perangkat, lalu coba lagi.', 6500);
       console.error(err);
     }
   };
@@ -4408,49 +4507,43 @@ export default function App() {
 
           /* ---------- Sub: Suara & Notifikasi ---------- */
           if (view === 'suara') {
+            const openAndroidBluetoothSettings = () => {
+              const ua = navigator.userAgent || '';
+              if (!/Android/i.test(ua)) { flash('Buka pengaturan Bluetooth perangkat ini secara manual.', 5000); return; }
+              try {
+                window.location.href = 'intent:#Intent;action=android.settings.BLUETOOTH_SETTINGS;end';
+                window.setTimeout(() => flash('Jika tidak terbuka, buka Pengaturan Android → Bluetooth secara manual.', 6000), 1200);
+              } catch (err) { flash('Buka Pengaturan Android → Bluetooth secara manual.', 6000); }
+            };
             return wrap(<>
               {back('Suara & Notifikasi')}
-              <div className="ms-group">
-                <div className="ms-row">
-                  <div className="ms-row-start">
-                    <div className="ms-icon-box amber"><Volume2 size={20} /></div>
-                    <div className="ms-row-text">
-                      <span className="ms-row-label">Alarm pesanan dapur</span>
-                      <span className="ms-row-sub">
-                        {isDapur ? 'Selalu aktif untuk akun Dapur' : centralAudioDevice ? '✓ Berbunyi di HP ini saat pesanan masuk' : otherAudio ? `Sudah aktif di ${otherAudio.deviceName}` : 'Nonaktif'}
-                      </span>
-                    </div>
-                  </div>
-                  {!isDapur && (
-                    <label className="ms-switch">
-                      <input type="checkbox" checked={centralAudioDevice} onChange={e => e.target.checked ? activateCentralAudio() : disableCentralAudio()} />
-                      <span className="ms-slider"></span>
-                    </label>
-                  )}
+              <div className="sound-settings sound-settings-minimal">
+                <div className="sound-setting-row">
+                  <div className="sound-row-icon amber"><Volume2 size={20}/></div>
+                  <div className="sound-row-main"><div className="sound-row-title">Alarm pesanan</div><div className="sound-row-sub">{audioOnHere ? 'Aktif' : 'Nonaktif'}</div></div>
+                  {!isDapur && <label className="ms-switch" aria-label="Aktifkan alarm"><input type="checkbox" checked={centralAudioDevice} onChange={e => e.target.checked ? activateCentralAudio() : disableCentralAudio()}/><span className="ms-slider"></span></label>}
                 </div>
-                {audioOnHere && (
-                  <div className="ms-row">
-                    <div className="ms-row-start">
-                      <div className="ms-icon-box slate"><Bell size={19} /></div>
-                      <div className="ms-row-text"><span className="ms-row-label">Tes bunyi alarm</span></div>
-                    </div>
-                    <button type="button" className="ms-btn-action secondary" onClick={playCentralKitchenAlarm}>Bunyikan</button>
-                  </div>
-                )}
-                <div className="ms-row">
-                  <div className="ms-row-start">
-                    <div className="ms-icon-box amber"><Bell size={20} /></div>
-                    <div className="ms-row-text">
-                      <span className="ms-row-label">Notifikasi pesanan</span>
-                      <span className="ms-row-sub">Izin browser: <b>{notifLabel}</b></span>
-                    </div>
-                  </div>
-                  {notifPerm !== 'granted'
-                    ? <button type="button" className="ms-btn-action primary" onClick={requestNotificationPermission}>Izinkan</button>
-                    : <button type="button" className="ms-btn-action secondary" onClick={testNotification}>Tes</button>}
+                <div className="sound-setting-row sound-row-action">
+                  <div className="sound-row-icon"><Music size={20}/></div>
+                  <div className="sound-row-main"><div className="sound-row-title">Suara alarm</div><div className="sound-row-sub sound-file-name">{customAlarmName}</div></div>
+                  <button type="button" className="sound-compact-button" disabled={alarmFileBusy} onClick={() => alarmFileInputRef.current?.click()}>{alarmFileBusy ? '...' : 'Pilih'}</button>
+                  <input ref={alarmFileInputRef} type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a" onChange={handleAlarmFileChange} style={{display:'none'}}/>
+                </div>
+                <div className="sound-setting-row sound-row-action">
+                  <div className="sound-row-icon"><Volume2 size={20}/></div>
+                  <div className="sound-row-main"><div className="sound-row-title">Tes suara</div></div>
+                  <button type="button" className="sound-compact-button" disabled={alarmFileBusy} onClick={previewKitchenAlarm}>Putar</button>
+                </div>
+                {customAlarmName !== 'kitchen-alarm.mp3' && <div className="sound-setting-row sound-row-action"><div className="sound-row-icon"><RotateCcw size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Suara bawaan</div></div><button type="button" className="sound-compact-button" disabled={alarmFileBusy} onClick={resetAlarmFile}>Reset</button></div>}
+                {audioOnHere && <div className="sound-setting-row sound-row-action"><div className="sound-row-icon amber"><Bell size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Tes alarm pesanan</div></div><button type="button" className="sound-compact-button" onClick={playCentralKitchenAlarm}>Putar</button></div>}
+                <div className="sound-setting-row sound-row-action" role="button" tabIndex={0} onClick={openAndroidBluetoothSettings} onKeyDown={e => e.key === 'Enter' && openAndroidBluetoothSettings()}>
+                  <div className="sound-row-icon"><Bluetooth size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Bluetooth</div><div className="sound-row-sub">Hubungkan speaker</div></div><ChevronRight size={18} className="sound-row-chevron"/>
+                </div>
+                <div className="sound-setting-row sound-row-action">
+                  <div className="sound-row-icon green"><Bell size={20}/></div><div className="sound-row-main"><div className="sound-row-title">Notifikasi</div><div className="sound-row-sub">{notifLabel}</div></div>
+                  {notifPerm !== 'granted' ? <button type="button" className="sound-compact-button" onClick={requestNotificationPermission}>Izinkan</button> : <button type="button" className="sound-compact-button" onClick={testNotification}>Tes</button>}
                 </div>
               </div>
-              <p className="ms-footnote">Aktifkan alarm hanya di satu HP atau tablet (misalnya yang ada di dapur) supaya bunyinya tidak ganda.</p>
             </>);
           }
 
@@ -5545,5 +5638,4 @@ export default function App() {
     </div>
   );
 }
-
 createRoot(document.getElementById('root')).render(<App />);

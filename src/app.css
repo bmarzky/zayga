@@ -1350,3 +1350,16 @@ tbody tr:last-child td{border-bottom:0}
   max-height:100%;
   object-fit:contain;
 }
+
+/* ===== Pengaturan: tambahan gaya mobile ===== */
+.ms-page-title{font-size:1.3rem;font-weight:800;letter-spacing:-.02em;margin:0 0 16px 4px;color:var(--ink)}
+.ms-row-end{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.ms-value{font-size:.8rem;color:var(--mut);font-weight:600;max-width:46%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ms-dot{width:9px;height:9px;border-radius:50%;background:#cbd5e1;flex:none}
+.ms-dot.ok{background:#16a34a;box-shadow:0 0 0 3px #dcfce7}
+.ms-dot.warn{background:#f59e0b;box-shadow:0 0 0 3px #fef3c7}
+.ms-chip{padding:3px 8px;border-radius:99px;background:#f1f5f9;border:1px solid var(--line);font-size:.7rem;font-weight:700;color:var(--ink2);white-space:nowrap}
+.ms-footnote{font-size:.76rem;color:var(--mut);margin:8px 12px 0;line-height:1.45}
+.ms-input{margin-top:6px;min-height:42px}
+.ms-expand{padding:14px 16px;background:#f8fafc;border-top:1px solid var(--line)}
+.ms-container .ms-btn-action.danger.full{margin-top:4px}

@@ -1363,3 +1363,29 @@ tbody tr:last-child td{border-bottom:0}
 .ms-input{margin-top:6px;min-height:42px}
 .ms-expand{padding:14px 16px;background:#f8fafc;border-top:1px solid var(--line)}
 .ms-container .ms-btn-action.danger.full{margin-top:4px}
+
+
+/* ============================================================
+   SWIPE_TABS_PATCH — tab kategori sticky + geser antar kategori
+   ============================================================ */
+.po-top{position:static;top:auto;z-index:auto;border-bottom:0;flex:none}
+.po-cats-bar{
+  position:sticky;top:0;z-index:30;flex:none;
+  padding:8px 12px;background:var(--sf);
+  border-bottom:1px solid var(--line);
+  box-shadow:0 2px 8px rgba(15,23,42,.05);
+}
+.po-cats{scroll-behavior:smooth}
+.po-list{touch-action:pan-y;overscroll-behavior-x:contain}
+.po-list.slide-left{animation:poSlideLeft .22s ease-out}
+.po-list.slide-right{animation:poSlideRight .22s ease-out}
+@keyframes poSlideLeft{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
+@keyframes poSlideRight{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}
+@media (max-width:899px){
+  /* area geser tetap luas walau menu di kategori itu sedikit */
+  .po-list{min-height:60dvh}
+}
+@media (min-width:900px){
+  /* di tablet/desktop daftar menu punya scroll sendiri, tab tidak perlu sticky */
+  .po-cats-bar{position:static;box-shadow:none}
+}

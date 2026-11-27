@@ -65,7 +65,7 @@ const BAKSO_ID = 'bakso-custom';
 // Tambahan dihitung sebagai bagian dari harga item, bukan menu terpisah.
 // Harga Telur mengikuti rancangan: +Rp3.000. Level pedas tidak dikenakan biaya.
 const MENU_ADDONS = [
-  { id: 'telur', label: 'Telur', price: 3000, categories: ['Mie', 'Popmie', 'Nasi'] }
+  { id: 'telur', label: 'Telur', price: 3000, categories: ['Mie', 'Popmie'] }
 ];
 const SPICE_LEVELS = ['Tidak pedas', 'Normal', 'Pedas', 'Extra pedas'];
 
@@ -115,10 +115,12 @@ const DEFAULT_MENU_ITEMS = [
   { id: 12, name: 'Popmie Rasa Kari', category: 'Popmie', price: 8000, active: true },
   { id: 13, name: 'Popmie Rasa Soto', category: 'Popmie', price: 8000, active: true },
   { id: 14, name: 'Nasi Ayam Geprek', category: 'Nasi', price: 15000, active: true },
-  { id: 15, name: 'Nasi Putih', category: 'Nasi', price: 10000, active: true },
+  { id: 15, name: 'Nasi', category: 'Nasi', price: 5000, active: true }, // NASI_MENU_UPDATE
   { id: 16, name: 'Nasi Goreng Telur', category: 'Nasi', price: 13000, active: true },
   { id: 17, name: 'Nasi Goreng Ayam', category: 'Nasi', price: 15000, active: true },
   { id: 18, name: 'Ayam Geprek', category: 'Nasi', price: 10000, active: true },
+  { id: 51, name: 'Lontong', category: 'Nasi', price: 13000, active: true },
+  { id: 52, name: 'Nasi Telur', category: 'Nasi', price: 13000, active: true },
   { id: 19, name: 'Es Kosong', category: 'Minuman', price: 2000, active: true },
   { id: 20, name: 'Blue Squash', category: 'Minuman', price: 12000, active: true },
   { id: 21, name: 'Orange Squash', category: 'Minuman', price: 12000, active: true },

@@ -1934,6 +1934,40 @@ export default function App() {
   }, [category, page]);
 
 
+  // Statistik penjualan dihitung dari seluruh riwayat pesanan yang sudah dimuat
+  // (termasuk transaksi lama), bukan hanya pesanan hari ini.
+  // Varian Panas/Hangat/Dingin dan tambahan susu digabung ke nama menu dasarnya.
+  const menuSales = useMemo(() => {
+    const totals = new Map();
+    const salesKey = item => {
+      const name = String(item?.name || '')
+        .replace(/\s+\((Panas|Hangat|Dingin)\)/i, '')
+        .replace(/\s+(Panas|Hangat|Dingin)$/i, '')
+        .replace(/\s+\+\s*Susu$/i, '')
+        .trim().toLowerCase().replace(/\s+/g, ' ');
+      return `${String(item?.category || 'Lainnya').trim().toLowerCase()}::${name}`;
+    };
+
+    (orders || []).forEach(order => {
+      (order?.items || []).forEach(soldItem => {
+        if (String(soldItem?.category || '').toLowerCase() === 'bakso') return;
+        const key = salesKey(soldItem);
+        if (key.endsWith('::')) return;
+        totals.set(key, (totals.get(key) || 0) + Math.max(0, Number(soldItem?.qty) || 0));
+      });
+    });
+    return totals;
+  }, [orders]);
+
+  const getMenuSales = item => {
+    const name = String(item?.name || '')
+      .replace(/\s+\((Panas|Hangat|Dingin)\)/i, '')
+      .replace(/\s+(Panas|Hangat|Dingin)$/i, '')
+      .replace(/\s+\+\s*Susu$/i, '')
+      .trim().toLowerCase().replace(/\s+/g, ' ');
+    return menuSales.get(`${String(item?.category || 'Lainnya').trim().toLowerCase()}::${name}`) || 0;
+  };
+
   const filtered = useMemo(() => {
     const active = (items || []).filter(x => x.active && (category === 'Semua' || category === 'Favorit' || x.category === category));
     // Menu lama yang berupa topping tidak lagi menjadi item terpisah.
@@ -1959,10 +1993,25 @@ export default function App() {
     clean.forEach(x => {
       if (!consumed.has(String(x.id))) merged.push(x);
     });
+
     let result = merged.filter(x => String(x.name || '').toLowerCase().includes(query.toLowerCase()));
-    if (category === 'Favorit') result = result.filter(x => favNames.includes(x.name) || favNames.includes(baseName(x.name))).sort((a, b) => favNames.indexOf(a.name) - favNames.indexOf(b.name));
+
+    if (category === 'Favorit') {
+      result = result
+        .filter(x => favNames.includes(x.name) || favNames.includes(baseName(x.name)))
+        .sort((a, b) => favNames.indexOf(a.name) - favNames.indexOf(b.name));
+    } else {
+      // Menu terlaris tampil paling atas pada kategori yang sedang dibuka.
+      // Jika jumlah terjual sama, urutan asli daftar menu tetap dipertahankan.
+      const originalOrder = new Map(result.map((item, index) => [String(item.id), index]));
+      result = [...result].sort((a, b) =>
+        getMenuSales(b) - getMenuSales(a) ||
+        (originalOrder.get(String(a.id)) ?? 0) - (originalOrder.get(String(b.id)) ?? 0)
+      );
+    }
+
     return result;
-  }, [items, category, query, favNames]);
+  }, [items, category, query, favNames, menuSales]);
 
   // Tampilan Kelola Menu: satukan varian suhu dan sembunyikan menu topping lama.
   // Data asli tetap disimpan sampai Admin memilih Hapus pada grup terkait.
